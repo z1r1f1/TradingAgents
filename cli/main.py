@@ -30,6 +30,7 @@ from cli.models import AnalystType
 from cli.utils import *
 from cli.announcements import fetch_announcements, display_announcements
 from cli.stats_handler import StatsCallbackHandler
+from tradingagents.utils.timezone import now as local_now, timestamp as local_timestamp
 
 console = Console()
 
@@ -139,11 +140,11 @@ class MessageBuffer:
         return count
 
     def add_message(self, message_type, content):
-        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        timestamp = local_timestamp("%H:%M:%S")
         self.messages.append((timestamp, message_type, content))
 
     def add_tool_call(self, tool_name, args):
-        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        timestamp = local_timestamp("%H:%M:%S")
         self.tool_calls.append((timestamp, tool_name, args))
 
     def update_agent_status(self, agent, status):
@@ -510,7 +511,7 @@ def get_user_selections():
     selected_ticker = get_ticker()
 
     # Step 2: Analysis date
-    default_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    default_date = local_now().strftime("%Y-%m-%d")
     console.print(
         create_question_box(
             "Step 2: Analysis Date",
@@ -612,6 +613,67 @@ def get_user_selections():
     }
 
 
+
+def build_fixed_selections(
+    ticker: str,
+    analysis_date: Optional[str] = None,
+    analysts: str = "market,social,news,fundamentals",
+    research_depth: int = 1,
+    llm_provider: Optional[str] = None,
+    backend_url: Optional[str] = None,
+    shallow_thinker: Optional[str] = None,
+    deep_thinker: Optional[str] = None,
+    output_language: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
+):
+    """Build selections from CLI flags so routine runs can skip prompts."""
+
+    ticker = ticker.strip().upper()
+    if not ticker:
+        raise typer.BadParameter("ticker cannot be empty")
+
+    if analysis_date is None:
+        analysis_date = local_now().strftime("%Y-%m-%d")
+    else:
+        try:
+            parsed_date = datetime.datetime.strptime(analysis_date, "%Y-%m-%d")
+        except ValueError as exc:
+            raise typer.BadParameter("date must use YYYY-MM-DD format") from exc
+        if parsed_date.date() > local_now().date():
+            raise typer.BadParameter("date cannot be in the future")
+
+    analyst_values = [item.strip().lower() for item in analysts.split(",") if item.strip()]
+    if not analyst_values:
+        raise typer.BadParameter("analysts cannot be empty")
+    invalid_analysts = [item for item in analyst_values if item not in ANALYST_ORDER]
+    if invalid_analysts:
+        raise typer.BadParameter(
+            f"invalid analyst(s): {', '.join(invalid_analysts)}; "
+            f"valid values: {', '.join(ANALYST_ORDER)}"
+        )
+    selected_analysts = [AnalystType(item) for item in ANALYST_ORDER if item in analyst_values]
+
+    if research_depth < 1:
+        raise typer.BadParameter("depth must be >= 1")
+
+    provider = (llm_provider or DEFAULT_CONFIG["llm_provider"]).lower()
+
+    return {
+        "ticker": ticker,
+        "analysis_date": analysis_date,
+        "analysts": selected_analysts,
+        "research_depth": research_depth,
+        "llm_provider": provider,
+        "backend_url": backend_url or DEFAULT_CONFIG.get("backend_url"),
+        "shallow_thinker": shallow_thinker or DEFAULT_CONFIG["quick_think_llm"],
+        "deep_thinker": deep_thinker or DEFAULT_CONFIG["deep_think_llm"],
+        "google_thinking_level": None,
+        "openai_reasoning_effort": reasoning_effort if provider == "openai" else None,
+        "anthropic_effort": None,
+        "output_language": output_language or DEFAULT_CONFIG.get("output_language", "English"),
+    }
+
+
 def get_ticker():
     """Get ticker symbol from user input."""
     return typer.prompt("", default="SPY")
@@ -621,12 +683,12 @@ def get_analysis_date():
     """Get the analysis date from user input."""
     while True:
         date_str = typer.prompt(
-            "", default=datetime.datetime.now().strftime("%Y-%m-%d")
+            "", default=local_now().strftime("%Y-%m-%d")
         )
         try:
             # Validate date format and ensure it's not in the future
             analysis_date = datetime.datetime.strptime(date_str, "%Y-%m-%d")
-            if analysis_date.date() > datetime.datetime.now().date():
+            if analysis_date.date() > local_now().date():
                 console.print("[red]Error: Analysis date cannot be in the future[/red]")
                 continue
             return date_str
@@ -926,9 +988,16 @@ def format_tool_args(args, max_length=80) -> str:
         return result[:max_length - 3] + "..."
     return result
 
-def run_analysis(checkpoint: bool = False):
+def run_analysis(
+    checkpoint: bool = False,
+    selections_override: Optional[dict] = None,
+    prompt_after_run: bool = True,
+    save_report: bool = False,
+    save_path: Optional[Path] = None,
+    display_report: bool = False,
+):
     # First get all user selections
-    selections = get_user_selections()
+    selections = selections_override or get_user_selections()
 
     # Create config with selected research depth
     config = DEFAULT_CONFIG.copy()
@@ -1174,26 +1243,39 @@ def run_analysis(checkpoint: bool = False):
     # Post-analysis prompts (outside Live context for clean interaction)
     console.print("\n[bold cyan]Analysis Complete![/bold cyan]\n")
 
-    # Prompt to save report
-    save_choice = typer.prompt("Save report?", default="Y").strip().upper()
-    if save_choice in ("Y", "YES", ""):
+    # Prompt to save an additional bundled report for interactive runs.
+    # The per-section reports are always written under config["results_dir"].
+    if prompt_after_run:
+        save_choice = typer.prompt("Save report?", default="Y").strip().upper()
+        should_save_report = save_choice in ("Y", "YES", "")
+    else:
+        should_save_report = save_report
+
+    if should_save_report:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         default_path = Path.cwd() / "reports" / f"{selections['ticker']}_{timestamp}"
-        save_path_str = typer.prompt(
-            "Save path (press Enter for default)",
-            default=str(default_path)
-        ).strip()
-        save_path = Path(save_path_str)
+        if prompt_after_run:
+            save_path_str = typer.prompt(
+                "Save path (press Enter for default)",
+                default=str(default_path)
+            ).strip()
+            resolved_save_path = Path(save_path_str)
+        else:
+            resolved_save_path = save_path or default_path
         try:
-            report_file = save_report_to_disk(final_state, selections["ticker"], save_path)
-            console.print(f"\n[green]✓ Report saved to:[/green] {save_path.resolve()}")
+            report_file = save_report_to_disk(final_state, selections["ticker"], resolved_save_path)
+            console.print(f"\n[green]✓ Report saved to:[/green] {resolved_save_path.resolve()}")
             console.print(f"  [dim]Complete report:[/dim] {report_file.name}")
         except Exception as e:
             console.print(f"[red]Error saving report: {e}[/red]")
 
     # Prompt to display full report
-    display_choice = typer.prompt("\nDisplay full report on screen?", default="Y").strip().upper()
-    if display_choice in ("Y", "YES", ""):
+    if prompt_after_run:
+        display_choice = typer.prompt("\nDisplay full report on screen?", default="Y").strip().upper()
+        should_display_report = display_choice in ("Y", "YES", "")
+    else:
+        should_display_report = display_report
+    if should_display_report:
         display_complete_report(final_state)
 
 
@@ -1209,12 +1291,102 @@ def analyze(
         "--clear-checkpoints",
         help="Delete all saved checkpoints before running (force fresh start).",
     ),
+    ticker: Optional[str] = typer.Option(
+        None,
+        "--ticker",
+        "-t",
+        help="Run non-interactively for this ticker, e.g. 600330.SS. If omitted, use interactive prompts.",
+    ),
+    analysis_date: Optional[str] = typer.Option(
+        None,
+        "--date",
+        "-d",
+        help="Analysis date in YYYY-MM-DD. Defaults to today's local date for non-interactive runs.",
+    ),
+    analysts: str = typer.Option(
+        "market,social,news,fundamentals",
+        "--analysts",
+        help="Comma-separated analysts: market,social,news,fundamentals.",
+    ),
+    depth: int = typer.Option(
+        1,
+        "--depth",
+        help="Research/debate depth. 1=shallow, 3=medium, 5=deep.",
+    ),
+    llm_provider: Optional[str] = typer.Option(
+        None,
+        "--llm-provider",
+        help="LLM provider. Defaults to TRADINGAGENTS_LLM_PROVIDER/default_config.",
+    ),
+    backend_url: Optional[str] = typer.Option(
+        None,
+        "--backend-url",
+        help="OpenAI-compatible backend URL. Defaults to environment/default_config.",
+    ),
+    quick_model: Optional[str] = typer.Option(
+        None,
+        "--quick-model",
+        help="Quick-thinking model. Defaults to TRADINGAGENTS_QUICK_MODEL/default_config.",
+    ),
+    deep_model: Optional[str] = typer.Option(
+        None,
+        "--deep-model",
+        help="Deep-thinking model. Defaults to TRADINGAGENTS_DEEP_MODEL/default_config.",
+    ),
+    output_language: Optional[str] = typer.Option(
+        None,
+        "--output-language",
+        help="Report language. Defaults to TRADINGAGENTS_OUTPUT_LANGUAGE/default_config.",
+    ),
+    reasoning_effort: Optional[str] = typer.Option(
+        None,
+        "--reasoning-effort",
+        help="OpenAI reasoning effort, e.g. low/medium/high.",
+    ),
+    save_report_flag: bool = typer.Option(
+        False,
+        "--save-report",
+        help="For non-interactive runs, also save the bundled report under --save-path/default app reports dir.",
+    ),
+    save_path: Optional[Path] = typer.Option(
+        None,
+        "--save-path",
+        help="Path for the optional bundled report when --save-report is used.",
+    ),
+    display_report_flag: bool = typer.Option(
+        False,
+        "--display-report",
+        help="For non-interactive runs, print the full final report after completion.",
+    ),
 ):
     if clear_checkpoints:
         from tradingagents.graph.checkpointer import clear_all_checkpoints
         n = clear_all_checkpoints(DEFAULT_CONFIG["data_cache_dir"])
         console.print(f"[yellow]Cleared {n} checkpoint(s).[/yellow]")
-    run_analysis(checkpoint=checkpoint)
+
+    if ticker:
+        selections = build_fixed_selections(
+            ticker=ticker,
+            analysis_date=analysis_date,
+            analysts=analysts,
+            research_depth=depth,
+            llm_provider=llm_provider,
+            backend_url=backend_url,
+            shallow_thinker=quick_model,
+            deep_thinker=deep_model,
+            output_language=output_language,
+            reasoning_effort=reasoning_effort,
+        )
+        run_analysis(
+            checkpoint=checkpoint,
+            selections_override=selections,
+            prompt_after_run=False,
+            save_report=save_report_flag,
+            save_path=save_path,
+            display_report=display_report_flag,
+        )
+    else:
+        run_analysis(checkpoint=checkpoint)
 
 
 if __name__ == "__main__":

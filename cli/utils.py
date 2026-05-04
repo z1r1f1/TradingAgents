@@ -1,3 +1,5 @@
+import os
+
 import questionary
 from typing import List, Optional, Tuple, Dict
 
@@ -231,8 +233,13 @@ def select_deep_thinking_agent(provider) -> str:
 def select_llm_provider() -> tuple[str, str | None]:
     """Select the LLM provider and its API endpoint."""
     # (display_name, provider_key, base_url)
+    openai_base_url = os.getenv("TRADINGAGENTS_BACKEND_URL") or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+    openai_display = "OpenAI"
+    if openai_base_url != "https://api.openai.com/v1":
+        openai_display = f"OpenAI-compatible ({openai_base_url})"
+
     PROVIDERS = [
-        ("OpenAI", "openai", "https://api.openai.com/v1"),
+        (openai_display, "openai", openai_base_url),
         ("Google", "google", None),
         ("Anthropic", "anthropic", "https://api.anthropic.com/"),
         ("xAI", "xai", "https://api.x.ai/v1"),

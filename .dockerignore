@@ -11,5 +11,7 @@ build
 dist
 results
 eval_results
+data
+reports
 Dockerfile
 docker-compose.yml

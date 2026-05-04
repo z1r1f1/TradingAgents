@@ -165,9 +165,19 @@ class OpenAIClient(BaseLLMClient):
                 llm_kwargs[key] = self.kwargs[key]
 
         # Native OpenAI: use Responses API for consistent behavior across
-        # all model families. Third-party providers use Chat Completions.
-        if self.provider == "openai":
+        # all model families. Custom OpenAI-compatible endpoints (for example
+        # the user's local Codex/NewAPI gateway) may implement different
+        # streaming requirements, so route those through Chat Completions.
+        custom_openai_endpoint = (
+            self.provider == "openai"
+            and self.base_url
+            and "api.openai.com" not in self.base_url
+        )
+        if self.provider == "openai" and not custom_openai_endpoint:
             llm_kwargs["use_responses_api"] = True
+        elif custom_openai_endpoint:
+            # The local Codex-compatible gateway requires stream=true.
+            llm_kwargs.setdefault("streaming", True)
 
         # DeepSeek's thinking-mode quirks live in their own subclass so the
         # base NormalizedChatOpenAI stays free of provider-specific branches.

@@ -4,6 +4,7 @@ import json
 import pandas as pd
 from datetime import date, timedelta, datetime
 from typing import Annotated
+from tradingagents.utils.timezone import today as local_today
 
 SavePathType = Annotated[str, "File path to save data. If None, data is not saved."]
 
@@ -48,7 +49,7 @@ def save_output(data: pd.DataFrame, tag: str, save_path: SavePathType = None) ->
 
 
 def get_current_date():
-    return date.today().strftime("%Y-%m-%d")
+    return local_today().strftime("%Y-%m-%d")
 
 
 def decorate_all_methods(decorator):

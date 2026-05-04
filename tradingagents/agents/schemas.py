@@ -24,6 +24,32 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 
+def _output_language_is_chinese() -> bool:
+    """Return True when the configured user-facing language is Chinese."""
+    try:
+        from tradingagents.dataflows.config import get_config
+
+        lang = (get_config().get("output_language", "English") or "English").strip().lower()
+        return lang in {"chinese", "中文", "zh", "zh-cn", "simplified chinese", "简体中文"}
+    except Exception:
+        return False
+
+
+_RATING_ZH = {
+    "Buy": "买入",
+    "Overweight": "增持",
+    "Hold": "持有",
+    "Underweight": "减持",
+    "Sell": "卖出",
+}
+
+
+def _rating_text(value: str) -> str:
+    if _output_language_is_chinese():
+        return f"{_RATING_ZH.get(value, value)}（{value}）"
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Shared rating types
 # ---------------------------------------------------------------------------
@@ -92,6 +118,14 @@ class ResearchPlan(BaseModel):
 
 def render_research_plan(plan: ResearchPlan) -> str:
     """Render a ResearchPlan to markdown for storage and the trader's prompt context."""
+    if _output_language_is_chinese():
+        return "\n".join([
+            f"**投资建议**: {_rating_text(plan.recommendation.value)}",
+            "",
+            f"**理由**: {plan.rationale}",
+            "",
+            f"**策略行动**: {plan.strategic_actions}",
+        ])
     return "\n".join([
         f"**Recommendation**: {plan.recommendation.value}",
         "",
@@ -145,6 +179,24 @@ def render_trader_proposal(proposal: TraderProposal) -> str:
     preserved for backward compatibility with the analyst stop-signal text
     and any external code that greps for it.
     """
+    if _output_language_is_chinese():
+        parts = [
+            f"**操作建议**: {_rating_text(proposal.action.value)}",
+            "",
+            f"**理由**: {proposal.reasoning}",
+        ]
+        if proposal.entry_price is not None:
+            parts.extend(["", f"**入场价格**: {proposal.entry_price}"])
+        if proposal.stop_loss is not None:
+            parts.extend(["", f"**止损价格**: {proposal.stop_loss}"])
+        if proposal.position_sizing:
+            parts.extend(["", f"**仓位建议**: {proposal.position_sizing}"])
+        parts.extend([
+            "",
+            f"FINAL TRANSACTION PROPOSAL: **{proposal.action.value.upper()}**",
+        ])
+        return "\n".join(parts)
+
     parts = [
         f"**Action**: {proposal.action.value}",
         "",
@@ -212,8 +264,22 @@ def render_pm_decision(decision: PortfolioDecision) -> str:
     Memory log, CLI display, and saved report files all read this markdown,
     so the rendered output preserves the exact section headers (``**Rating**``,
     ``**Executive Summary**``, ``**Investment Thesis**``) that downstream
-    parsers and the report writers already handle.
+    parsers and the report writers already handle when English is selected.
     """
+    if _output_language_is_chinese():
+        parts = [
+            f"**评级**: {_rating_text(decision.rating.value)}",
+            "",
+            f"**执行摘要**: {decision.executive_summary}",
+            "",
+            f"**投资论点**: {decision.investment_thesis}",
+        ]
+        if decision.price_target is not None:
+            parts.extend(["", f"**目标价格**: {decision.price_target}"])
+        if decision.time_horizon:
+            parts.extend(["", f"**时间周期**: {decision.time_horizon}"])
+        return "\n".join(parts)
+
     parts = [
         f"**Rating**: {decision.rating.value}",
         "",

@@ -11,6 +11,7 @@ from .y_finance import (
     get_insider_transactions as get_yfinance_insider_transactions,
 )
 from .yfinance_news import get_news_yfinance, get_global_news_yfinance
+from .eastmoney_news import EastmoneyNoDataError, get_news_eastmoney
 from .alpha_vantage import (
     get_stock as get_alpha_vantage_stock,
     get_indicator as get_alpha_vantage_indicator,
@@ -62,6 +63,7 @@ TOOLS_CATEGORIES = {
 
 VENDOR_LIST = [
     "yfinance",
+    "eastmoney",
     "alpha_vantage",
 ]
 
@@ -96,6 +98,7 @@ VENDOR_METHODS = {
     },
     # news_data
     "get_news": {
+        "eastmoney": get_news_eastmoney,
         "alpha_vantage": get_alpha_vantage_news,
         "yfinance": get_news_yfinance,
     },
@@ -156,6 +159,8 @@ def route_to_vendor(method: str, *args, **kwargs):
 
         try:
             return impl_func(*args, **kwargs)
+        except EastmoneyNoDataError:
+            continue  # Eastmoney only covers A-share symbols/ranges; try next vendor
         except AlphaVantageRateLimitError:
             continue  # Only rate limits trigger fallback
 
