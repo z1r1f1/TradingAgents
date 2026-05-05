@@ -83,3 +83,31 @@ describe('scheduled analysis frontend helpers', () => {
     expect(form.params.analysts).toEqual(['news']);
   });
 });
+
+import { buildMemoryOptionLabel, toggleMemoryId } from './App';
+import type { AgentMemory } from './api';
+
+describe('agent memory frontend helpers', () => {
+  const memory: AgentMemory = {
+    id: 9,
+    user_id: 1,
+    source_analysis_task_id: 3,
+    ticker: 'SPY',
+    analysis_date: '2026-05-01',
+    agent_name: 'Market Analyst',
+    title: 'SPY Market Analyst memory for 2026-05-01',
+    content: 'market context',
+    tags: { section: 'market_report' },
+    archived: false,
+    created_at: '2026-05-01T10:00:00+00:00'
+  };
+
+  it('labels selectable memories by agent, ticker, and date', () => {
+    expect(buildMemoryOptionLabel(memory)).toBe('Market Analyst · SPY · 2026-05-01');
+  });
+
+  it('toggles selected memory ids deterministically', () => {
+    expect(toggleMemoryId([1, 3], 2)).toEqual([1, 3, 2]);
+    expect(toggleMemoryId([1, 3], 3)).toEqual([1]);
+  });
+});

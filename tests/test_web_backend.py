@@ -148,7 +148,7 @@ def test_real_graph_runner_emits_progressive_events_from_stream(monkeypatch):
 
     class FakePropagator:
         def create_initial_state(self, ticker, analysis_date, past_context=None):
-            assert (ticker, analysis_date, past_context) == ("SPY", "2026-05-01", "past context")
+            assert (ticker, analysis_date, past_context) == ("SPY", "2026-05-01", "past context\n\nselected memory context")
             return {"ticker": ticker}
 
         def get_graph_args(self):
@@ -200,6 +200,7 @@ def test_real_graph_runner_emits_progressive_events_from_stream(monkeypatch):
         quick_model="gpt-5.4-mini",
         deep_model="gpt-5.5",
         output_language="English",
+        memory_context="selected memory context",
     )
 
     result = TradingAgentsGraphRunner().run(
@@ -349,3 +350,164 @@ def test_due_schedule_calculation_and_explicit_runner_entrypoint(tmp_path: Path)
     assert execution[3] is not None
     assert execution[4] is not None
     assert execution[5] is None
+
+
+def test_completed_analysis_extracts_owned_searchable_agent_memories(tmp_path: Path):
+    client, db_path = make_client(tmp_path)
+    headers = login(client)
+    other_register = client.post(
+        "/api/auth/register",
+        json={"email": "memory-other@example.com", "password": "correct horse battery staple"},
+    )
+    assert other_register.status_code == 201
+    other_login = client.post(
+        "/api/auth/login",
+        json={"email": "memory-other@example.com", "password": "correct horse battery staple"},
+    )
+    other_headers = {"Authorization": f"Bearer {other_login.json()['access_token']}"}
+
+    assert client.get("/api/memories").status_code in {401, 403}
+
+    created = client.post(
+        "/api/analyses",
+        headers=headers,
+        json={
+            "ticker": "SPY",
+            "analysis_date": "2026-05-01",
+            "analysts": ["market", "news"],
+            "research_depth": 1,
+            "llm_provider": "openai",
+            "quick_model": "gpt-5.4-mini",
+            "deep_model": "gpt-5.5",
+            "output_language": "English",
+        },
+    ).json()
+
+    memories = client.get("/api/memories", headers=headers).json()["items"]
+    agents = {memory["agent_name"] for memory in memories}
+    assert {"Market Analyst", "News Analyst", "Research Manager", "Trader", "Portfolio Manager"} <= agents
+    assert all(memory["ticker"] == "SPY" for memory in memories)
+    assert all(memory["source_analysis_task_id"] == created["id"] for memory in memories)
+
+    market = client.get("/api/memories", headers=headers, params={"ticker": "SPY", "agent": "Market Analyst", "query": "Demo"}).json()["items"]
+    assert len(market) == 1
+    memory_id = market[0]["id"]
+    detail = client.get(f"/api/memories/{memory_id}", headers=headers).json()
+    assert detail["content"].startswith("Demo Market Analyst report")
+    assert client.get(f"/api/memories/{memory_id}", headers=other_headers).status_code == 404
+
+    archived = client.post(f"/api/memories/{memory_id}/archive", headers=headers)
+    assert archived.status_code == 200
+    assert archived.json()["archived"] is True
+    assert client.get("/api/memories", headers=headers, params={"archived": "false"}).json()["items"]
+    archived_only = client.get("/api/memories", headers=headers, params={"archived": "true"}).json()["items"]
+    assert [item["id"] for item in archived_only] == [memory_id]
+    unarchived = client.post(f"/api/memories/{memory_id}/unarchive", headers=headers)
+    assert unarchived.status_code == 200
+    assert unarchived.json()["archived"] is False
+
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("select count(*) from agent_memories").fetchone()[0] >= 5
+
+
+def test_selected_memories_attach_to_manual_analysis_and_context_is_bounded(tmp_path: Path):
+    from tradingagents.web.schemas import RunnerResult
+
+    client, db_path = make_client(tmp_path)
+    headers = login(client)
+    first = client.post(
+        "/api/analyses",
+        headers=headers,
+        json={
+            "ticker": "SPY",
+            "analysis_date": "2026-05-01",
+            "analysts": ["market"],
+            "research_depth": 1,
+            "llm_provider": "openai",
+            "quick_model": "gpt-5.4-mini",
+            "deep_model": "gpt-5.5",
+            "output_language": "English",
+        },
+    ).json()
+    memory_id = client.get("/api/memories", headers=headers, params={"agent": "Market Analyst"}).json()["items"][0]["id"]
+
+    captured_contexts: list[str | None] = []
+
+    class CapturingRunner:
+        def run(self, params, emit):
+            captured_contexts.append(params.memory_context)
+            return RunnerResult(
+                report_sections={"market_report": "second market", "final_trade_decision": "HOLD with memory"},
+                final_decision={"decision": "HOLD", "rationale": "used memory", "raw_decision": "HOLD with memory"},
+            )
+
+    client.app.state.service.runner = CapturingRunner()
+    second = client.post(
+        "/api/analyses",
+        headers=headers,
+        json={
+            "ticker": "AAPL",
+            "analysis_date": "2026-05-02",
+            "analysts": ["market"],
+            "research_depth": 1,
+            "llm_provider": "openai",
+            "quick_model": "gpt-5.4-mini",
+            "deep_model": "gpt-5.5",
+            "output_language": "English",
+            "memory_ids": [memory_id],
+        },
+    ).json()
+
+    detail = client.get(f"/api/analyses/{second['id']}", headers=headers).json()
+    assert [memory["id"] for memory in detail["attached_memories"]] == [memory_id]
+    assert captured_contexts and "Market Analyst" in captured_contexts[0]
+    assert "Demo Market Analyst report" in captured_contexts[0]
+    assert len(captured_contexts[0]) <= 4000
+
+    with sqlite3.connect(db_path) as conn:
+        attachment = conn.execute("select analysis_task_id, memory_id from analysis_memory_attachments").fetchone()
+    assert attachment == (second["id"], memory_id)
+    assert first["id"] != second["id"]
+
+
+def test_schedule_trigger_attaches_configured_memories(tmp_path: Path):
+    client, _ = make_client(tmp_path)
+    headers = login(client)
+    client.post(
+        "/api/analyses",
+        headers=headers,
+        json={
+            "ticker": "SPY",
+            "analysis_date": "2026-05-01",
+            "analysts": ["market"],
+            "research_depth": 1,
+            "llm_provider": "openai",
+            "quick_model": "gpt-5.4-mini",
+            "deep_model": "gpt-5.5",
+            "output_language": "English",
+        },
+    )
+    memory_id = client.get("/api/memories", headers=headers, params={"agent": "Market Analyst"}).json()["items"][0]["id"]
+
+    schedule = client.post(
+        "/api/schedules",
+        headers=headers,
+        json={
+            "name": "Memory schedule",
+            "ticker": "AAPL",
+            "start_at": "2026-05-01T09:30:00+00:00",
+            "interval": "weekly",
+            "analysts": ["market"],
+            "research_depth": 1,
+            "llm_provider": "openai",
+            "quick_model": "gpt-5.4-mini",
+            "deep_model": "gpt-5.5",
+            "output_language": "English",
+            "memory_ids": [memory_id],
+        },
+    ).json()
+    assert schedule["memory_ids"] == [memory_id]
+
+    execution = client.post(f"/api/schedules/{schedule['id']}/trigger", headers=headers).json()
+    detail = client.get(f"/api/analyses/{execution['analysis_task_id']}", headers=headers).json()
+    assert [memory["id"] for memory in detail["attached_memories"]] == [memory_id]

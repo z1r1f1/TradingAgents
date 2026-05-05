@@ -98,6 +98,8 @@ class TradingAgentsGraphRunner:
         past_context = ""
         if hasattr(graph, "memory_log") and hasattr(graph.memory_log, "get_past_context"):
             past_context = graph.memory_log.get_past_context(params.ticker)
+        if params.memory_context:
+            past_context = f"{past_context}\n\n{params.memory_context}" if past_context else params.memory_context
         init_agent_state = graph.propagator.create_initial_state(
             params.ticker,
             trade_date,

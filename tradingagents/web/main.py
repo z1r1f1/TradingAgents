@@ -18,6 +18,7 @@ from .schemas import (
     RunDueRequest,
     ScheduledAnalysisCreate,
     ScheduledAnalysisUpdate,
+    MemoryUpdate,
     TokenResponse,
     UserCreate,
 )
@@ -121,6 +122,55 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
             background_tasks.add_task(service.run_task, task["id"], AnalysisCreate(**task["parameters"]))
         return task
 
+
+
+    @app.get("/api/memories")
+    def list_memories(
+        ticker: str | None = None,
+        agent: str | None = None,
+        analysis_date: str | None = None,
+        query: str | None = None,
+        archived: bool | None = False,
+        user: dict = Depends(current_user),
+    ) -> dict:
+        return {
+            "items": repository.list_memories_for_user(
+                user["id"],
+                ticker=ticker,
+                agent=agent,
+                analysis_date=analysis_date,
+                query=query,
+                archived=archived,
+            )
+        }
+
+    @app.get("/api/memories/{memory_id}")
+    def get_memory(memory_id: int, user: dict = Depends(current_user)) -> dict:
+        memory = repository.get_memory_for_user(memory_id, user["id"])
+        if not memory:
+            raise HTTPException(status_code=404, detail="memory not found")
+        return memory
+
+    @app.patch("/api/memories/{memory_id}")
+    def update_memory(memory_id: int, payload: MemoryUpdate, user: dict = Depends(current_user)) -> dict:
+        memory = repository.update_memory(memory_id, user["id"], payload)
+        if not memory:
+            raise HTTPException(status_code=404, detail="memory not found")
+        return memory
+
+    @app.post("/api/memories/{memory_id}/archive")
+    def archive_memory(memory_id: int, user: dict = Depends(current_user)) -> dict:
+        memory = repository.set_memory_archived(memory_id, user["id"], True)
+        if not memory:
+            raise HTTPException(status_code=404, detail="memory not found")
+        return memory
+
+    @app.post("/api/memories/{memory_id}/unarchive")
+    def unarchive_memory(memory_id: int, user: dict = Depends(current_user)) -> dict:
+        memory = repository.set_memory_archived(memory_id, user["id"], False)
+        if not memory:
+            raise HTTPException(status_code=404, detail="memory not found")
+        return memory
 
     @app.post("/api/schedules", status_code=201)
     def create_schedule(payload: ScheduledAnalysisCreate, user: dict = Depends(current_user)) -> dict:

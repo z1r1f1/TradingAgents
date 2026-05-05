@@ -45,6 +45,8 @@ class AnalysisCreate(BaseModel):
     google_thinking_level: str | None = None
     openai_reasoning_effort: str | None = None
     anthropic_effort: str | None = None
+    memory_ids: list[int] = Field(default_factory=list)
+    memory_context: str | None = Field(default=None, exclude=True)
 
     @field_validator("ticker")
     @classmethod
@@ -82,6 +84,7 @@ class AnalysisCreate(BaseModel):
             "google_thinking_level": self.google_thinking_level,
             "openai_reasoning_effort": self.openai_reasoning_effort,
             "anthropic_effort": self.anthropic_effort,
+            "memory_ids": self.memory_ids,
         }
 
 
@@ -95,6 +98,7 @@ class AnalysisRerun(BaseModel):
     quick_model: str | None = None
     deep_model: str | None = None
     output_language: str | None = None
+    memory_ids: list[int] | None = None
 
     @field_validator("ticker")
     @classmethod
@@ -128,6 +132,7 @@ class ScheduledAnalysisCreate(BaseModel):
     google_thinking_level: str | None = None
     openai_reasoning_effort: str | None = None
     anthropic_effort: str | None = None
+    memory_ids: list[int] = Field(default_factory=list)
 
     @field_validator("ticker")
     @classmethod
@@ -154,6 +159,7 @@ class ScheduledAnalysisUpdate(BaseModel):
     output_language: str | None = Field(default=None, min_length=1, max_length=64)
     analysis_date: date | None = None
     analysis_date_policy: Literal["run_date", "fixed"] | None = None
+    memory_ids: list[int] | None = None
 
     @field_validator("ticker")
     @classmethod
@@ -172,6 +178,11 @@ class ScheduledAnalysisUpdate(BaseModel):
 
 class RunDueRequest(BaseModel):
     now: datetime | None = None
+
+
+class MemoryUpdate(BaseModel):
+    tags: dict[str, Any] | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class EventPayload(BaseModel):

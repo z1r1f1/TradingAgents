@@ -186,3 +186,65 @@ The React UI includes a scheduled-analysis panel with:
 - There is no production-grade retry queue, dead-letter queue, or horizontal scaling in Phase 2.
 - Keep `TRADINGAGENTS_WEB_RUNNER=demo` for local scheduler smoke tests. Set `TRADINGAGENTS_WEB_RUNNER=real` only after provider keys, budgets, and rate limits are ready.
 - Do not expose schedule APIs on the internet without the Phase 1 production hardening items: HTTPS, registration controls, origin allowlisting, rate limiting, secret management, and audit logging.
+
+## Phase 3 per-agent analysis memory
+
+Phase 3 adds explicit, user-selected historical agent memories without vector databases, external embedding services, Redis, Postgres, or object storage.
+
+### Memory extraction rules
+
+When a web analysis completes, the backend extracts per-agent memories from persisted report sections:
+
+- `market_report` -> `Market Analyst`
+- `sentiment_report` -> `Social Analyst`
+- `news_report` -> `News Analyst`
+- `fundamentals_report` -> `Fundamentals Analyst`
+- `investment_plan` -> `Research Manager`
+- `trader_investment_plan` -> `Trader`
+- `final_trade_decision` -> `Portfolio Manager`
+
+Each memory stores owner user id, source analysis task id, ticker, analysis date, agent name, title, content, JSON tags, archived flag, and creation timestamp.
+
+### Memory API routes
+
+All memory routes require bearer authentication and are owner-scoped:
+
+- `GET /api/memories` — list memories. Filters: `ticker`, `agent`, `analysis_date`, `query`, `archived`.
+- `GET /api/memories/{memory_id}` — view one memory.
+- `PATCH /api/memories/{memory_id}` — update title/tags metadata.
+- `POST /api/memories/{memory_id}/archive` — hide memory from default selection/search.
+- `POST /api/memories/{memory_id}/unarchive` — restore memory to default selection/search.
+
+### SQLite memory tables
+
+- `agent_memories`: extracted per-agent memories with owner, source task, ticker/date, agent, title/content, tags JSON, archive status, and timestamp.
+- `analysis_memory_attachments`: selected memories attached to a generated analysis task.
+- `schedule_memory_attachments`: selected memories attached to a schedule and copied to each generated analysis task.
+
+### Manual memory selection workflow
+
+The frontend memory browser lets users search/list their own active memories, view details, archive memories, and select memories in the manual analysis form. Selected memory ids are submitted with `POST /api/analyses` as `memory_ids`. Analysis detail/history includes `attached_memories` so users can audit which historical context was used.
+
+### Scheduled memory selection workflow
+
+Schedule create/edit includes memory selection. The selected memory ids are persisted with the schedule. Manual schedule triggers and due schedule execution copy those ids into the generated Phase 1 analysis task, so the normal history/detail view shows the attached memories.
+
+### Context injection design and limits
+
+Only explicitly selected, non-archived memories owned by the authenticated user can be attached. Before the web runner starts, attached memories are rendered deterministically in attachment order as bounded plain text:
+
+```text
+Attached historical agent memories:
+[Memory #id] Agent | Ticker | Date
+Content...
+```
+
+The context is capped at **4000 characters** before being passed to the web runner as `memory_context`. The real graph runner appends this bounded context to the existing web-only `past_context` seam. The CLI path is unchanged.
+
+### Privacy and security cautions
+
+- Memories are never shared across users.
+- Archived memories are excluded from default listing and cannot be newly attached.
+- Memory content may contain prior model outputs and market data summaries; treat SQLite backups and exports as sensitive user data.
+- Phase 3 uses simple SQLite text filtering, not semantic retrieval or embeddings.
+- Production deployments should add retention policies, audit review, export/delete controls, and compliance governance before relying on memories for regulated workflows.

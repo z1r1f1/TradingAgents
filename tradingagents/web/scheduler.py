@@ -114,4 +114,5 @@ class SchedulerService:
             google_thinking_level=schedule.get("google_thinking_level"),
             openai_reasoning_effort=schedule.get("openai_reasoning_effort"),
             anthropic_effort=schedule.get("anthropic_effort"),
+            memory_ids=schedule.get("memory_ids", []),
         )

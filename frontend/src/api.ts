@@ -8,6 +8,7 @@ export type AnalysisParams = {
   quick_model: string;
   deep_model: string;
   output_language: string;
+  memory_ids?: number[];
 };
 
 export type AnalysisTask = {
@@ -20,9 +21,23 @@ export type AnalysisTask = {
   final_decision?: { decision: string; rationale: string } | null;
   report_sections?: { section_name: string; content: string }[];
   events?: AgentEvent[];
+  attached_memories?: AgentMemory[];
 };
 
 export type AgentEvent = { sequence: number; agent: string; event_type: string; message: string; created_at: string };
+export type AgentMemory = {
+  id: number;
+  user_id: number;
+  source_analysis_task_id: number;
+  ticker: string;
+  analysis_date: string;
+  agent_name: string;
+  title: string;
+  content: string;
+  tags: Record<string, unknown>;
+  archived: boolean;
+  created_at: string;
+};
 export type ScheduleInterval = 'daily' | 'weekly' | 'monthly';
 export type ScheduleStatus = 'active' | 'paused';
 
@@ -81,6 +96,10 @@ export const api = {
   resumeSchedule: (token: string, id: number) => request<Schedule>(`/api/schedules/${id}/resume`, token, { method: 'POST' }),
   deleteSchedule: (token: string, id: number) => request<void>(`/api/schedules/${id}`, token, { method: 'DELETE' }),
   triggerSchedule: (token: string, id: number) => request<ScheduleExecution>(`/api/schedules/${id}/trigger`, token, { method: 'POST' }),
+  listMemories: (token: string, params: Record<string, string> = {}) => request<{ items: AgentMemory[] }>(`/api/memories?${new URLSearchParams(params)}`, token),
+  getMemory: (token: string, id: number) => request<AgentMemory>(`/api/memories/${id}`, token),
+  archiveMemory: (token: string, id: number) => request<AgentMemory>(`/api/memories/${id}/archive`, token, { method: 'POST' }),
+  unarchiveMemory: (token: string, id: number) => request<AgentMemory>(`/api/memories/${id}/unarchive`, token, { method: 'POST' }),
   streamUrl: (id: number) => `${API_BASE}/api/analyses/${id}/events`
 };
 

@@ -21,6 +21,8 @@ class AnalysisService:
 
     def run_task(self, task_id: int, params: AnalysisCreate) -> None:
         self.repository.update_task_status(task_id, "running")
+        memory_context = self.repository.build_memory_context_for_task(task_id, max_chars=4000)
+        params = params.model_copy(update={"memory_context": memory_context})
 
         def emit(event: EventPayload) -> None:
             self.repository.append_event(task_id, event)
@@ -33,6 +35,9 @@ class AnalysisService:
             raise
         self.repository.save_report_sections(task_id, result.report_sections)
         self.repository.save_final_decision(task_id, result.final_decision)
+        owner_id = self.repository.get_task_owner_id(task_id)
+        if owner_id is not None:
+            self.repository.extract_agent_memories(owner_id, task_id, params.parameter_payload(), result.report_sections)
         self.repository.update_task_status(task_id, "completed")
 
     def rerun(self, user_id: int, original_task_id: int, overrides: AnalysisRerun, *, run_inline: bool) -> dict[str, Any] | None:

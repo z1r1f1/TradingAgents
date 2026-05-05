@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .auth import expires_at, hash_password, new_token, token_hash, utcnow, verify_password
-from .schemas import AnalysisCreate, EventPayload, ScheduledAnalysisCreate, ScheduledAnalysisUpdate
+from .schemas import AnalysisCreate, EventPayload, MemoryUpdate, ScheduledAnalysisCreate, ScheduledAnalysisUpdate
 
 
 class WebRepository:
@@ -131,6 +131,31 @@ class WebRepository:
                     completed_at text,
                     error text
                 );
+                create table if not exists agent_memories (
+                    id integer primary key autoincrement,
+                    user_id integer not null references users(id) on delete cascade,
+                    source_analysis_task_id integer not null references analysis_tasks(id) on delete cascade,
+                    ticker text not null,
+                    analysis_date text not null,
+                    agent_name text not null,
+                    title text not null,
+                    content text not null,
+                    tags_json text not null,
+                    archived integer not null default 0,
+                    created_at text not null
+                );
+                create table if not exists analysis_memory_attachments (
+                    analysis_task_id integer not null references analysis_tasks(id) on delete cascade,
+                    memory_id integer not null references agent_memories(id) on delete cascade,
+                    created_at text not null,
+                    primary key (analysis_task_id, memory_id)
+                );
+                create table if not exists schedule_memory_attachments (
+                    schedule_id integer not null references schedules(id) on delete cascade,
+                    memory_id integer not null references agent_memories(id) on delete cascade,
+                    created_at text not null,
+                    primary key (schedule_id, memory_id)
+                );
                 """
             )
 
@@ -221,7 +246,18 @@ class WebRepository:
                     json.dumps(payload),
                 ),
             )
+            for memory_id in self._validate_memory_ids(conn, user_id, payload.get("memory_ids", [])):
+                conn.execute(
+                    "insert into analysis_memory_attachments(analysis_task_id, memory_id, created_at) values (?, ?, ?)",
+                    (task_id, memory_id, now),
+                )
         return self.get_task_for_user(task_id, user_id, include_detail=False)  # type: ignore[return-value]
+
+
+    def get_task_owner_id(self, task_id: int) -> int | None:
+        with self.connect() as conn:
+            row = conn.execute("select user_id from analysis_tasks where id = ?", (task_id,)).fetchone()
+            return int(row["user_id"]) if row else None
 
     def update_task_status(self, task_id: int, status: str, error: str | None = None) -> None:
         completed_at = utcnow() if status in {"completed", "failed"} else None
@@ -304,6 +340,7 @@ class WebRepository:
                 result["events"] = [self._event_dict(row) for row in events]
                 result["report_sections"] = [dict(row) for row in sections]
                 result["final_decision"] = json.loads(final["payload_json"]) if final else None
+                result["attached_memories"] = self.list_attached_memories(conn, task_id)
             return result
 
 
@@ -343,7 +380,9 @@ class WebRepository:
                     now,
                 ),
             )
-        return self.get_schedule_for_user(cur.lastrowid, user_id)  # type: ignore[return-value]
+        schedule_id = cur.lastrowid
+        self.replace_schedule_memory_attachments(schedule_id, user_id, payload.memory_ids)
+        return self.get_schedule_for_user(schedule_id, user_id)  # type: ignore[return-value]
 
     def list_schedules_for_user(self, user_id: int) -> list[dict[str, Any]]:
         with self.connect() as conn:
@@ -379,6 +418,8 @@ class WebRepository:
         fields = []
         values: list[Any] = []
         for key, value in updates.items():
+            if key == "memory_ids":
+                continue
             db_key = key
             if key == "analysts":
                 value = json.dumps(value)
@@ -399,6 +440,8 @@ class WebRepository:
                 f"update schedules set {', '.join(fields)} where id = ? and user_id = ? and deleted_at is null",
                 tuple(values),
             )
+        if payload.memory_ids is not None:
+            self.replace_schedule_memory_attachments(schedule_id, user_id, payload.memory_ids)
         return self.get_schedule_for_user(schedule_id, user_id)
 
     def set_schedule_status(self, schedule_id: int, user_id: int, status: str) -> dict[str, Any] | None:
@@ -467,12 +510,190 @@ class WebRepository:
     def _schedule_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)
         data["analysts"] = json.loads(data.pop("analysts_json"))
+        data["memory_ids"] = self.get_schedule_memory_ids(data["id"])
         return data
 
     def _format_datetime(self, value: datetime) -> str:
         if value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+
+
+    def _validate_memory_ids(self, conn: sqlite3.Connection, user_id: int, memory_ids: list[int]) -> list[int]:
+        if not memory_ids:
+            return []
+        unique_ids = list(dict.fromkeys(int(memory_id) for memory_id in memory_ids))
+        placeholders = ",".join("?" for _ in unique_ids)
+        rows = conn.execute(
+            f"select id from agent_memories where user_id = ? and archived = 0 and id in ({placeholders})",
+            (user_id, *unique_ids),
+        ).fetchall()
+        found = {row["id"] for row in rows}
+        if found != set(unique_ids):
+            raise ValueError("one or more selected memories are unavailable")
+        return unique_ids
+
+    def extract_agent_memories(
+        self,
+        user_id: int,
+        task_id: int,
+        params: dict[str, Any],
+        sections: dict[str, str],
+    ) -> None:
+        section_agents = {
+            "market_report": "Market Analyst",
+            "sentiment_report": "Social Analyst",
+            "news_report": "News Analyst",
+            "fundamentals_report": "Fundamentals Analyst",
+            "investment_plan": "Research Manager",
+            "trader_investment_plan": "Trader",
+            "final_trade_decision": "Portfolio Manager",
+        }
+        ticker = params["ticker"]
+        analysis_date = params["analysis_date"]
+        with self.connect() as conn:
+            for section, agent_name in section_agents.items():
+                content = (sections.get(section) or "").strip()
+                if not content:
+                    continue
+                conn.execute(
+                    """
+                    insert into agent_memories(
+                        user_id, source_analysis_task_id, ticker, analysis_date, agent_name, title, content, tags_json, archived, created_at
+                    ) values (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+                    """,
+                    (
+                        user_id,
+                        task_id,
+                        ticker,
+                        analysis_date,
+                        agent_name,
+                        f"{ticker} {agent_name} memory for {analysis_date}",
+                        content,
+                        json.dumps({"section": section}),
+                        utcnow(),
+                    ),
+                )
+
+    def list_memories_for_user(
+        self,
+        user_id: int,
+        *,
+        ticker: str | None = None,
+        agent: str | None = None,
+        analysis_date: str | None = None,
+        query: str | None = None,
+        archived: bool | None = False,
+    ) -> list[dict[str, Any]]:
+        clauses = ["user_id = ?"]
+        values: list[Any] = [user_id]
+        if ticker:
+            clauses.append("ticker = ?")
+            values.append(ticker.upper())
+        if agent:
+            clauses.append("agent_name = ?")
+            values.append(agent)
+        if analysis_date:
+            clauses.append("analysis_date = ?")
+            values.append(analysis_date)
+        if archived is not None:
+            clauses.append("archived = ?")
+            values.append(1 if archived else 0)
+        if query:
+            clauses.append("(title like ? or content like ? or tags_json like ?)")
+            like = f"%{query}%"
+            values.extend([like, like, like])
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"select * from agent_memories where {' and '.join(clauses)} order by created_at desc, id desc",
+                tuple(values),
+            ).fetchall()
+        return [self._memory_dict(row) for row in rows]
+
+    def get_memory_for_user(self, memory_id: int, user_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("select * from agent_memories where id = ? and user_id = ?", (memory_id, user_id)).fetchone()
+            return self._memory_dict(row) if row else None
+
+    def update_memory(self, memory_id: int, user_id: int, payload: MemoryUpdate) -> dict[str, Any] | None:
+        current = self.get_memory_for_user(memory_id, user_id)
+        if not current:
+            return None
+        updates = payload.model_dump(exclude_unset=True)
+        if not updates:
+            return current
+        fields = []
+        values: list[Any] = []
+        if "title" in updates:
+            fields.append("title = ?")
+            values.append(updates["title"])
+        if "tags" in updates:
+            fields.append("tags_json = ?")
+            values.append(json.dumps(updates["tags"] or {}))
+        values.extend([memory_id, user_id])
+        with self.connect() as conn:
+            conn.execute(f"update agent_memories set {', '.join(fields)} where id = ? and user_id = ?", tuple(values))
+        return self.get_memory_for_user(memory_id, user_id)
+
+    def set_memory_archived(self, memory_id: int, user_id: int, archived: bool) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            conn.execute(
+                "update agent_memories set archived = ? where id = ? and user_id = ?",
+                (1 if archived else 0, memory_id, user_id),
+            )
+        return self.get_memory_for_user(memory_id, user_id)
+
+    def list_attached_memories(self, conn: sqlite3.Connection, task_id: int) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            """
+            select m.* from agent_memories m
+            join analysis_memory_attachments a on a.memory_id = m.id
+            where a.analysis_task_id = ?
+            order by a.created_at asc, m.id asc
+            """,
+            (task_id,),
+        ).fetchall()
+        return [self._memory_dict(row) for row in rows]
+
+    def build_memory_context_for_task(self, task_id: int, *, max_chars: int = 4000) -> str | None:
+        with self.connect() as conn:
+            memories = self.list_attached_memories(conn, task_id)
+        if not memories:
+            return None
+        parts = ["Attached historical agent memories:"]
+        for memory in memories:
+            parts.append(
+                f"[Memory #{memory['id']}] {memory['agent_name']} | {memory['ticker']} | {memory['analysis_date']}\n"
+                f"{memory['content']}"
+            )
+        context = "\n\n".join(parts)
+        return context[:max_chars]
+
+    def replace_schedule_memory_attachments(self, schedule_id: int, user_id: int, memory_ids: list[int] | None) -> None:
+        if memory_ids is None:
+            return
+        with self.connect() as conn:
+            valid_ids = self._validate_memory_ids(conn, user_id, memory_ids)
+            conn.execute("delete from schedule_memory_attachments where schedule_id = ?", (schedule_id,))
+            for memory_id in valid_ids:
+                conn.execute(
+                    "insert into schedule_memory_attachments(schedule_id, memory_id, created_at) values (?, ?, ?)",
+                    (schedule_id, memory_id, utcnow()),
+                )
+
+    def get_schedule_memory_ids(self, schedule_id: int) -> list[int]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "select memory_id from schedule_memory_attachments where schedule_id = ? order by created_at asc, memory_id asc",
+                (schedule_id,),
+            ).fetchall()
+        return [row["memory_id"] for row in rows]
+
+    def _memory_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        data = dict(row)
+        data["tags"] = json.loads(data.pop("tags_json"))
+        data["archived"] = bool(data["archived"])
+        return data
 
     def _event_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)
