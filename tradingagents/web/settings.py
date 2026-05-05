@@ -32,6 +32,7 @@ class WebSettings:
     intervention_rate_limit: int = int(os.getenv("TRADINGAGENTS_WEB_INTERVENTION_RATE_LIMIT", "20"))
     real_runner_user_analysis_limit: int = int(os.getenv("TRADINGAGENTS_WEB_REAL_RUNNER_USER_ANALYSIS_LIMIT", "-1"))
     real_runner_workspace_analysis_limit: int = int(os.getenv("TRADINGAGENTS_WEB_REAL_RUNNER_WORKSPACE_ANALYSIS_LIMIT", "-1"))
+    real_runner_budget_period: str = os.getenv("TRADINGAGENTS_WEB_REAL_RUNNER_BUDGET_PERIOD", "never")
 
     @property
     def is_production(self) -> bool:

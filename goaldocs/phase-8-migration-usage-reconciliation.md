@@ -4,6 +4,30 @@
 
 - State: In progress
 - Team execution is underway; do not mark this phase complete until implementation and required validation are finished.
+- 2026-05-05 completion review: backend migration helpers, durable usage ledger/reconciliation, provider-usage import seams, operator usage report, and validation have landed.
+
+## Completion Status
+
+Complete on 2026-05-05. Implemented and validated:
+
+- Auditable SQLite migration dry-run/apply/validate helpers and maintenance CLI subcommands.
+- Durable `usage_ledger_events` persistence for SQLite and Postgres runtime initialization.
+- Budget-period configuration and usage-ledger recording for real-runner analysis launches.
+- Redis/in-memory budget describe/set helpers for reconciliation and repair workflows.
+- `tradingagents.web.usage.reconcile_usage_ledger` for reporting and repairing counter drift.
+- Mockable provider-usage import seams and focused unit coverage.
+- Audit/health-based operator usage report UI and documentation.
+
+Validation evidence collected by leader:
+
+- `ruff check tradingagents/web tests/test_web_backend.py tests/test_web_cluster_runtime.py tests/test_usage_governance.py frontend` — passed.
+- `git diff --check` — passed.
+- `python3 -m pytest -q` — `154 passed, 1 skipped, 44 subtests passed`.
+- `cd frontend && npm install && npm run build && npm test && npm run lint` — build/lint passed; `14` frontend tests passed.
+- `tradingagents --help` and `python3 -m cli.main --help` — passed.
+- Docker Compose Postgres/Redis cluster smoke: `tests/test_web_cluster_runtime.py` — `10 passed`.
+
+Remaining non-blocking risks move to Phase 9+: SSO/OIDC/SAML/SCIM, browser-hosted migration control UX, live provider billing API reconciliation, legal hold/regulated retention, and multi-region Redis split-brain handling.
 
 ## Objective
 
@@ -66,6 +90,15 @@ This phase does not include:
 - Phase 6 workspace RBAC/governance/cost guardrails still work.
 - Phase 7 Postgres/Redis cluster runtime still works.
 - Existing CLI commands still work.
+
+## Current WIP Review Notes
+
+As of 2026-05-05, Phase 8 implementation and validation are complete. Historical WIP notes below are retained as an implementation checklist that has now been satisfied:
+
+- Frontend operator report: `frontend/src/operatorReport.tsx` summarizes existing `GET /api/governance/audit` and `GET /api/health` data. It intentionally does not call unreleased migration, reconciliation, provider-usage, or usage-ledger endpoints.
+- Backend completed items: `tradingagents/web/maintenance.py` includes migration plan/apply/validate helpers and CLI subcommands; `tradingagents/web/database.py`/`postgres.py` include durable usage-ledger schema and repository methods; `tradingagents/web/usage.py` provides ledger reconciliation; provider imports in `tradingagents/web/usage_governance.py` are covered by focused tests.
+- Documentation status: backend Phase 8 runbooks are documented with backup/dry-run/validate safeguards after backend tests, migration/reconciliation smoke checks, and Postgres/Redis integration validation passed.
+- Validation status: full Phase 8 validation passed; docs preserve Phase 1-8 operational guidance and list remaining Phase 9+ risks separately.
 
 ## Validation
 

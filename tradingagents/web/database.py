@@ -65,6 +65,26 @@ class WebRepository:
                     workspace_id integer references workspaces(id) on delete set null,
                     created_at text not null
                 );
+                create table if not exists usage_ledger_events (
+                    id integer primary key autoincrement,
+                    user_id integer references users(id) on delete set null,
+                    workspace_id integer references workspaces(id) on delete set null,
+                    event_type text not null,
+                    resource_type text,
+                    resource_id text,
+                    allowed integer not null default 1,
+                    request_kind text not null,
+                    provider text,
+                    model text,
+                    period_kind text not null,
+                    window_key text not null,
+                    quantity integer not null default 1,
+                    cost_cents integer not null default 0,
+                    external_ref text,
+                    metadata_json text not null,
+                    occurred_at text not null,
+                    created_at text not null
+                );
                 create table if not exists sessions (
                     id integer primary key autoincrement,
                     user_id integer not null references users(id) on delete cascade,
@@ -241,6 +261,10 @@ class WebRepository:
             conn.execute(
                 "insert or ignore into schema_migrations(version, applied_at) values (?, ?)",
                 ("phase6-workspace-rbac-governance", utcnow()),
+            )
+            conn.execute(
+                "insert or ignore into schema_migrations(version, applied_at) values (?, ?)",
+                ("phase8-migration-usage-reconciliation", utcnow()),
             )
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
@@ -550,6 +574,162 @@ class WebRepository:
                 tuple(values),
             ).fetchall()
         return [self._audit_log_dict(row) for row in rows]
+
+
+    def record_usage_ledger(
+        self,
+        *,
+        user_id: int | None,
+        workspace_id: int | None,
+        resource_type: str | None = None,
+        resource_id: int | str | None = None,
+        event_type: str = "budget.usage.recorded",
+        allowed: bool = True,
+        request_kind: str = "analysis",
+        provider: str | None = None,
+        model: str | None = None,
+        period_kind: str = "never",
+        occurred_at: str | None = None,
+        quantity: int = 1,
+        cost_cents: int = 0,
+        external_ref: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        from .usage_governance import budget_window_for
+
+        window = budget_window_for(occurred_at, period_kind)
+        occurred = occurred_at or utcnow()
+        created = utcnow()
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                insert into usage_ledger_events(
+                    user_id, workspace_id, event_type, resource_type, resource_id, allowed, request_kind,
+                    provider, model, period_kind, window_key, quantity, cost_cents, external_ref,
+                    metadata_json, occurred_at, created_at
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    workspace_id,
+                    event_type,
+                    resource_type,
+                    str(resource_id) if resource_id is not None else None,
+                    1 if allowed else 0,
+                    request_kind,
+                    provider,
+                    model,
+                    window.window,
+                    window.period_key,
+                    quantity,
+                    cost_cents,
+                    external_ref,
+                    json.dumps(metadata or {}),
+                    occurred,
+                    created,
+                ),
+            )
+            row = conn.execute("select * from usage_ledger_events where id = ?", (cur.lastrowid,)).fetchone()
+        entry = self._usage_ledger_dict(row)
+        self.append_audit_log(
+            event_type,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            resource_type=resource_type or "usage_ledger",
+            resource_id=resource_id,
+            metadata={"ledger_event_id": entry["id"], "request_kind": request_kind, "window_key": entry["window_key"]},
+        )
+        return entry
+
+    def append_usage_ledger_event(self, event_type: str, **kwargs: Any) -> dict[str, Any]:
+        return self.record_usage_ledger(event_type=event_type, **kwargs)
+
+    def update_latest_usage_ledger_resource(
+        self,
+        *,
+        user_id: int,
+        workspace_id: int,
+        resource_type: str,
+        resource_id: int | str,
+    ) -> None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                select id from usage_ledger_events
+                where user_id = ? and workspace_id = ? and resource_id is null
+                order by id desc limit 1
+                """,
+                (user_id, workspace_id),
+            ).fetchone()
+            if row:
+                conn.execute(
+                    "update usage_ledger_events set resource_type = ?, resource_id = ? where id = ?",
+                    (resource_type, str(resource_id), row["id"]),
+                )
+
+    def list_usage_ledger(
+        self,
+        *,
+        user_id: int | None = None,
+        workspace_id: int | None = None,
+        period_kind: str | None = None,
+        window_key: str | None = None,
+        allowed: bool | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        values: list[Any] = []
+        if user_id is not None:
+            clauses.append("user_id = ?")
+            values.append(user_id)
+        if workspace_id is not None:
+            clauses.append("workspace_id = ?")
+            values.append(workspace_id)
+        if period_kind is not None:
+            clauses.append("period_kind = ?")
+            values.append(period_kind)
+        if window_key is not None:
+            clauses.append("window_key = ?")
+            values.append(window_key)
+        if allowed is not None:
+            clauses.append("allowed = ?")
+            values.append(1 if allowed else 0)
+        where = f"where {' and '.join(clauses)}" if clauses else ""
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"select * from usage_ledger_events {where} order by occurred_at asc, id asc",
+                tuple(values),
+            ).fetchall()
+        return [self._usage_ledger_dict(row) for row in rows]
+
+    def summarize_usage_ledger(
+        self,
+        *,
+        period_kind: str,
+        window_key: str,
+        user_id: int | None = None,
+        workspace_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses = ["period_kind = ?", "window_key = ?", "allowed = 1"]
+        values: list[Any] = [period_kind, window_key]
+        if user_id is not None:
+            clauses.append("user_id = ?")
+            values.append(user_id)
+        if workspace_id is not None:
+            clauses.append("workspace_id = ?")
+            values.append(workspace_id)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                select user_id, workspace_id, count(*) as event_count, coalesce(sum(quantity), 0) as quantity,
+                       coalesce(sum(cost_cents), 0) as cost_cents
+                from usage_ledger_events
+                where {' and '.join(clauses)}
+                group by user_id, workspace_id
+                order by user_id, workspace_id
+                """,
+                tuple(values),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def create_task(self, user_id: int, params: AnalysisCreate | dict[str, Any]) -> dict[str, Any]:
         if isinstance(params, dict):
@@ -1305,6 +1485,12 @@ class WebRepository:
 
     def _audit_log_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)
+        data["metadata"] = json.loads(data.pop("metadata_json"))
+        return data
+
+    def _usage_ledger_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        data = dict(row)
+        data["allowed"] = bool(data["allowed"])
         data["metadata"] = json.loads(data.pop("metadata_json"))
         return data
 

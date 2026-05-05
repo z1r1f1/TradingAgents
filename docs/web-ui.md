@@ -177,14 +177,15 @@ Manual and due executions create ordinary rows in `analysis_tasks`, `task_parame
 
 ## Phase 8 operator usage reporting
 
-The current frontend exposes a Phase 8 operator/governance report for the APIs that already exist in this build. It does **not** assume unreleased operator endpoints.
+The frontend exposes a Phase 8 operator/governance report using the APIs available in this build. It summarizes `GET /api/governance/audit` plus `GET /api/health`, so operators can review analysis launches, schedule triggers, intervention continuations, duplicate suppression, and `cost.blocked` events without requiring live provider credentials. Backend Phase 8 support includes SQLite migration dry-run/apply/validate helpers, durable usage-ledger records, Redis counter reconciliation helpers, and mockable provider-usage import seams.
 
 - The report is derived from `GET /api/governance/audit` plus `GET /api/health`.
 - Audit filters remain workspace-scoped and can narrow by target user id, event type, and ISO start/end timestamps.
 - The UI summarizes analysis launches, schedule triggers, intervention continuations, blocked real-runner attempts, and duplicate-suppression events already present in the audit log.
 - Blocked-run reasons are read from audit metadata, for example `user budget exceeded` or `workspace budget exceeded`.
 - Cluster/runtime warnings are displayed only from the existing health response fields (`runtime_mode`, storage backend, coordination backend, and dependency configuration flags).
-- Dedicated migration, reconciliation, or provider-usage operator views should only be added after the backend exposes stable routes for those resources.
+- Dedicated migration, reconciliation, or provider-usage operator views can build on the Phase 8 helper/API seams; this release keeps the UI intentionally audit/health based to avoid destructive migration controls in the browser.
+- Until those backend routes and maintenance commands land, operators should continue using the Phase 5-7 backup, audit, budget-cap, and cluster-health procedures below; do not infer provider billing totals from the audit-only report.
 
 ### Frontend scheduler UI
 
@@ -516,3 +517,13 @@ Integration tests use `TRADINGAGENTS_TEST_POSTGRES_DSN` and `TRADINGAGENTS_TEST_
 ### Backup and migration operations
 
 SQLite local backups still use `python3 -m tradingagents.web.maintenance backup`. Production-cluster backups should use managed Postgres snapshots or `pg_dump`/WAL archival appropriate to the deployment. Redis coordination state is short-lived or reconstructable except budget counters; reset budget counters deliberately during operational windows and document the reset in audit/ops logs.
+
+Phase 8 adds documented dry-run/apply/validate migration and usage-reconciliation workflows. Always create a readable backup before applying migration changes, inspect the dry-run row-count report, and validate source/target counts afterward. The helpers are idempotent and refuse apply without a readable backup by default; do not use ad-hoc migrations that could reassign users, workspaces, sessions, or audit rows.
+
+Maintenance commands:
+
+```bash
+python3 -m tradingagents.web.maintenance migration-plan --source ~/.tradingagents/web.sqlite3 --backup ./backup.sqlite3
+python3 -m tradingagents.web.maintenance migration-apply --source ./source.sqlite3 --target ./target.sqlite3 --backup ./backup.sqlite3
+python3 -m tradingagents.web.maintenance migration-validate --source ./source.sqlite3 --target ./target.sqlite3
+```

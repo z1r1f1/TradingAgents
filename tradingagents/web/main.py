@@ -148,6 +148,17 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
             user_limit=settings.real_runner_user_analysis_limit,
             workspace_limit=settings.real_runner_workspace_analysis_limit,
         )
+        if decision.allowed:
+            budget_period = getattr(settings, "real_runner_budget_period", "never")
+            repository.record_usage_ledger(
+                user_id=user["id"],
+                workspace_id=workspace_id,
+                resource_type="analysis",
+                event_type="budget.usage.recorded",
+                allowed=True,
+                request_kind="analysis",
+                period_kind=budget_period,
+            )
         if not decision.allowed:
             audit(
                 "cost.blocked",
@@ -343,6 +354,7 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
         payload = payload.model_copy(update={"workspace_id": workspace_id})
         enforce_real_runner_budget(user, workspace_id, request)
         task = service.create_analysis(user["id"], payload, run_inline=run_tasks_inline)
+        repository.update_latest_usage_ledger_resource(user_id=user["id"], workspace_id=workspace_id, resource_type="analysis", resource_id=task["id"])
         audit("analysis.create", user_id=user["id"], workspace_id=workspace_id, resource_type="analysis", resource_id=task["id"], request=request)
         if not run_tasks_inline:
             background_tasks.add_task(service.run_task, task["id"], payload)

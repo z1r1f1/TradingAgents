@@ -79,6 +79,20 @@ class InMemoryCoordinator:
             self._budget_hits[workspace_key] = workspace_count + 1
         return CoordinationDecision(True)
 
+    def set_budget_usage(self, *, user_id: int, workspace_id: int, user_count: int, workspace_count: int, period_key: str | None = None) -> None:
+        with self._mutex:
+            self._budget_hits[("user", user_id)] = user_count
+            self._budget_hits[("workspace", workspace_id)] = workspace_count
+            if period_key is not None:
+                self._budget_hits[("user", f"{period_key}:{user_id}")] = user_count
+                self._budget_hits[("workspace", f"{period_key}:{workspace_id}")] = workspace_count
+
+    def describe_budget(self, *, user_id: int, workspace_id: int, period_key: str | None = None) -> dict[str, int]:
+        with self._mutex:
+            user_key = ("user", f"{period_key}:{user_id}") if period_key is not None and ("user", f"{period_key}:{user_id}") in self._budget_hits else ("user", user_id)
+            workspace_key = ("workspace", f"{period_key}:{workspace_id}") if period_key is not None and ("workspace", f"{period_key}:{workspace_id}") in self._budget_hits else ("workspace", workspace_id)
+            return {"user": self._budget_hits.get(user_key, 0), "workspace": self._budget_hits.get(workspace_key, 0)}
+
     def acquire_lock(self, name: str, *, ttl_seconds: int) -> LockHandle | None:
         now = time.monotonic()
         expires_at = now + ttl_seconds
@@ -166,6 +180,22 @@ class RedisCoordinator:
         self.client.incr(user_key)
         self.client.incr(workspace_key)
         return CoordinationDecision(True)
+
+    def set_budget_usage(self, *, user_id: int, workspace_id: int, user_count: int, workspace_count: int, period_key: str | None = None) -> None:
+        self.client.set(self._key("budget", "user", user_id), user_count)
+        self.client.set(self._key("budget", "workspace", workspace_id), workspace_count)
+        if period_key is not None:
+            self.client.set(self._key("budget", "user", period_key, user_id), user_count)
+            self.client.set(self._key("budget", "workspace", period_key, workspace_id), workspace_count)
+
+    def describe_budget(self, *, user_id: int, workspace_id: int, period_key: str | None = None) -> dict[str, int]:
+        user_value = self.client.get(self._key("budget", "user", period_key, user_id)) if period_key is not None else None
+        workspace_value = self.client.get(self._key("budget", "workspace", period_key, workspace_id)) if period_key is not None else None
+        if user_value is None:
+            user_value = self.client.get(self._key("budget", "user", user_id))
+        if workspace_value is None:
+            workspace_value = self.client.get(self._key("budget", "workspace", workspace_id))
+        return {"user": int(user_value or 0), "workspace": int(workspace_value or 0)}
 
     def acquire_lock(self, name: str, *, ttl_seconds: int) -> LockHandle | None:
         key = self._key("lock", name)

@@ -100,6 +100,7 @@ class PostgresSchemaManager:
             "workspace_members",
             "schema_migrations",
             "audit_logs",
+            "usage_ledger_events",
             "sessions",
             "analysis_tasks",
             "task_parameters",
@@ -185,6 +186,26 @@ class PostgresSchemaManager:
             metadata_json text not null,
             ip_address text,
             workspace_id bigint references workspaces(id) on delete set null,
+            created_at text not null
+        );
+        create table if not exists usage_ledger_events (
+            id bigserial primary key,
+            user_id bigint references users(id) on delete set null,
+            workspace_id bigint references workspaces(id) on delete set null,
+            event_type text not null,
+            resource_type text,
+            resource_id text,
+            allowed integer not null default 1,
+            request_kind text not null,
+            provider text,
+            model text,
+            period_kind text not null,
+            window_key text not null,
+            quantity integer not null default 1,
+            cost_cents integer not null default 0,
+            external_ref text,
+            metadata_json text not null,
+            occurred_at text not null,
             created_at text not null
         );
         create table if not exists sessions (
