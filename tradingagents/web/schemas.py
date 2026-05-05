@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -109,6 +109,69 @@ class AnalysisRerun(BaseModel):
         if value is None:
             return value
         return AnalysisCreate.validate_analysts(value)
+
+
+class ScheduledAnalysisCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    ticker: str = Field(min_length=1, max_length=32)
+    start_at: datetime
+    interval: Literal["daily", "weekly", "monthly"]
+    analysts: list[str] = Field(min_length=1)
+    research_depth: int = Field(default=1, ge=1, le=10)
+    llm_provider: str = Field(default="openai", min_length=1, max_length=64)
+    backend_url: str | None = Field(default=None, max_length=512)
+    quick_model: str = Field(default="gpt-5.4-mini", min_length=1, max_length=128)
+    deep_model: str = Field(default="gpt-5.5", min_length=1, max_length=128)
+    output_language: str = Field(default="English", min_length=1, max_length=64)
+    analysis_date: date | None = None
+    analysis_date_policy: Literal["run_date", "fixed"] = "run_date"
+    google_thinking_level: str | None = None
+    openai_reasoning_effort: str | None = None
+    anthropic_effort: str | None = None
+
+    @field_validator("ticker")
+    @classmethod
+    def normalize_ticker(cls, value: str) -> str:
+        return AnalysisCreate.normalize_ticker(value)
+
+    @field_validator("analysts")
+    @classmethod
+    def validate_analysts(cls, value: list[str]) -> list[str]:
+        return AnalysisCreate.validate_analysts(value)
+
+
+class ScheduledAnalysisUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    ticker: str | None = Field(default=None, min_length=1, max_length=32)
+    start_at: datetime | None = None
+    interval: Literal["daily", "weekly", "monthly"] | None = None
+    analysts: list[str] | None = None
+    research_depth: int | None = Field(default=None, ge=1, le=10)
+    llm_provider: str | None = Field(default=None, min_length=1, max_length=64)
+    backend_url: str | None = Field(default=None, max_length=512)
+    quick_model: str | None = Field(default=None, min_length=1, max_length=128)
+    deep_model: str | None = Field(default=None, min_length=1, max_length=128)
+    output_language: str | None = Field(default=None, min_length=1, max_length=64)
+    analysis_date: date | None = None
+    analysis_date_policy: Literal["run_date", "fixed"] | None = None
+
+    @field_validator("ticker")
+    @classmethod
+    def normalize_optional_ticker(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        return AnalysisCreate.normalize_ticker(value)
+
+    @field_validator("analysts")
+    @classmethod
+    def validate_optional_analysts(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return value
+        return AnalysisCreate.validate_analysts(value)
+
+
+class RunDueRequest(BaseModel):
+    now: datetime | None = None
 
 
 class EventPayload(BaseModel):

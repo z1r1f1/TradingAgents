@@ -114,3 +114,75 @@ The production web runner streams the actual `TradingAgentsGraph.graph.stream(..
 ## Adjustable history rerun workflow
 
 History cards and completed task details include a load/template action. Loading a historical task copies its persisted parameters into the analysis form; users can edit ticker, date, analysts, research depth, provider/model fields, and output language, then press **Launch analysis** to create a new task. The existing rerun endpoint remains available for same-parameter or API-driven override reruns.
+
+## Phase 2 scheduled analysis
+
+Phase 2 adds SQLite-backed recurring analysis schedules without Redis, Celery, Postgres, cloud schedulers, or external queue services.
+
+### Scheduler setup
+
+The schedule API is available in the same FastAPI process as the Phase 1 web API. No extra service is required for manual triggers. Automatic due execution is intentionally in-process and can be driven by the protected explicit entrypoint:
+
+```bash
+POST /api/scheduler/run-due
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{"now":"2026-05-02T10:00:00+00:00"}
+```
+
+Omit `now` in normal operation to use the server's current UTC time. A deployment can call this endpoint from a local cron/systemd timer against each authenticated service account, or a future in-process loop can call the same `SchedulerService.run_due_for_user(...)` seam.
+
+### Schedule API routes
+
+All schedule routes require bearer authentication and are owner-scoped:
+
+- `POST /api/schedules` — create a schedule.
+- `GET /api/schedules` — list the current user's schedules.
+- `GET /api/schedules/{schedule_id}` — view schedule detail and recent executions.
+- `PATCH /api/schedules/{schedule_id}` — edit schedule configuration.
+- `DELETE /api/schedules/{schedule_id}` — soft-delete a schedule.
+- `POST /api/schedules/{schedule_id}/pause` — pause future due execution.
+- `POST /api/schedules/{schedule_id}/resume` — resume future due execution.
+- `POST /api/schedules/{schedule_id}/trigger` — manually create a normal Phase 1 analysis task from the schedule.
+- `POST /api/scheduler/run-due` — execute all due active schedules owned by the authenticated user.
+
+### Schedule configuration
+
+Schedules persist the Phase 1 analysis parameters plus recurrence metadata:
+
+- `name`
+- `ticker`
+- `start_at`
+- `interval`: `daily`, `weekly`, or `monthly`
+- `analysts`
+- `research_depth`
+- `llm_provider`, `backend_url`, `quick_model`, `deep_model`
+- `output_language`
+- optional `analysis_date` and `analysis_date_policy`
+
+By default, executions use the run date as the generated Phase 1 task's analysis date. Monthly recurrence clamps to the last valid day of the target month, for example January 31 -> February 28 in non-leap years.
+
+### SQLite scheduler tables
+
+- `schedules`: owner, status, recurrence metadata, next/last run timestamps, and copied Phase 1 analysis parameters.
+- `schedule_executions`: schedule id, generated analysis task id, status, trigger source, started/completed timestamps, and error message.
+
+Manual and due executions create ordinary rows in `analysis_tasks`, `task_parameters`, `agent_event_logs`, `report_sections`, and `final_decisions`, so Phase 1 history and realtime event behavior continue to work.
+
+### Frontend scheduler UI
+
+The React UI includes a scheduled-analysis panel with:
+
+- schedule create/edit form;
+- list of schedules with status, next run time, and recent execution result;
+- trigger, pause/resume, edit, and delete controls;
+- triggered schedule executions loading the generated Phase 1 analysis result into the existing realtime/history panel.
+
+### Scheduler limitations and cautions
+
+- The scheduler is single-process and SQLite-backed. It is not a distributed lock manager and should not be run concurrently from multiple web processes without additional coordination.
+- Due execution only happens when the web process is running and the explicit due-run entrypoint or future loop is invoked.
+- There is no production-grade retry queue, dead-letter queue, or horizontal scaling in Phase 2.
+- Keep `TRADINGAGENTS_WEB_RUNNER=demo` for local scheduler smoke tests. Set `TRADINGAGENTS_WEB_RUNNER=real` only after provider keys, budgets, and rate limits are ready.
+- Do not expose schedule APIs on the internet without the Phase 1 production hardening items: HTTPS, registration controls, origin allowlisting, rate limiting, secret management, and audit logging.

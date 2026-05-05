@@ -214,3 +214,138 @@ def test_real_graph_runner_emits_progressive_events_from_stream(monkeypatch):
     )
     assert result.final_decision["decision"] == "BUY"
     assert result.report_sections["market_report"] == "market report final"
+
+
+def test_schedule_crud_manual_trigger_and_owner_isolation(tmp_path: Path):
+    client, db_path = make_client(tmp_path)
+    headers = login(client)
+    other_register = client.post(
+        "/api/auth/register",
+        json={"email": "grace@example.com", "password": "correct horse battery staple"},
+    )
+    assert other_register.status_code == 201
+    other_login = client.post(
+        "/api/auth/login",
+        json={"email": "grace@example.com", "password": "correct horse battery staple"},
+    )
+    other_headers = {"Authorization": f"Bearer {other_login.json()['access_token']}"}
+
+    unauth = client.get("/api/schedules")
+    assert unauth.status_code in {401, 403}
+
+    create = client.post(
+        "/api/schedules",
+        headers=headers,
+        json={
+            "name": "Weekly SPY",
+            "ticker": "SPY",
+            "start_at": "2026-05-01T09:30:00+00:00",
+            "interval": "weekly",
+            "analysts": ["market", "news"],
+            "research_depth": 2,
+            "llm_provider": "openai",
+            "quick_model": "gpt-5.4-mini",
+            "deep_model": "gpt-5.5",
+            "output_language": "English",
+        },
+    )
+    assert create.status_code == 201
+    schedule = create.json()
+    schedule_id = schedule["id"]
+    assert schedule["status"] == "active"
+    assert schedule["next_run_at"] == "2026-05-01T09:30:00+00:00"
+
+    listed = client.get("/api/schedules", headers=headers).json()
+    assert [item["id"] for item in listed["items"]] == [schedule_id]
+    assert client.get(f"/api/schedules/{schedule_id}", headers=other_headers).status_code == 404
+
+    paused = client.post(f"/api/schedules/{schedule_id}/pause", headers=headers)
+    assert paused.status_code == 200
+    assert paused.json()["status"] == "paused"
+    resumed = client.post(f"/api/schedules/{schedule_id}/resume", headers=headers)
+    assert resumed.status_code == 200
+    assert resumed.json()["status"] == "active"
+
+    updated = client.patch(
+        f"/api/schedules/{schedule_id}",
+        headers=headers,
+        json={"ticker": "AAPL", "research_depth": 3, "interval": "monthly"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["ticker"] == "AAPL"
+    assert updated.json()["research_depth"] == 3
+    assert updated.json()["interval"] == "monthly"
+
+    trigger = client.post(f"/api/schedules/{schedule_id}/trigger", headers=headers)
+    assert trigger.status_code == 201
+    execution = trigger.json()
+    assert execution["schedule_id"] == schedule_id
+    assert execution["status"] == "completed"
+    assert execution["analysis_task_id"] is not None
+
+    task_detail = client.get(f"/api/analyses/{execution['analysis_task_id']}", headers=headers).json()
+    assert task_detail["parameters"]["ticker"] == "AAPL"
+    assert task_detail["parameters"]["research_depth"] == 3
+
+    with sqlite3.connect(db_path) as conn:
+        schedule_count = conn.execute("select count(*) from schedules").fetchone()[0]
+        execution_count = conn.execute("select count(*) from schedule_executions").fetchone()[0]
+        task_count = conn.execute("select count(*) from analysis_tasks").fetchone()[0]
+
+    assert schedule_count == 1
+    assert execution_count == 1
+    assert task_count == 1
+
+    deleted = client.delete(f"/api/schedules/{schedule_id}", headers=headers)
+    assert deleted.status_code == 204
+    assert client.get(f"/api/schedules/{schedule_id}", headers=headers).status_code == 404
+
+
+def test_due_schedule_calculation_and_explicit_runner_entrypoint(tmp_path: Path):
+    from tradingagents.web.scheduler import compute_next_run_at
+
+    assert compute_next_run_at("2026-05-01T09:30:00+00:00", "daily", after="2026-05-01T09:30:00+00:00") == "2026-05-02T09:30:00+00:00"
+    assert compute_next_run_at("2026-05-01T09:30:00+00:00", "weekly", after="2026-05-01T09:30:00+00:00") == "2026-05-08T09:30:00+00:00"
+    assert compute_next_run_at("2026-01-31T09:30:00+00:00", "monthly", after="2026-01-31T09:30:00+00:00") == "2026-02-28T09:30:00+00:00"
+
+    client, db_path = make_client(tmp_path)
+    headers = login(client)
+    create = client.post(
+        "/api/schedules",
+        headers=headers,
+        json={
+            "name": "Daily Due",
+            "ticker": "SPY",
+            "start_at": "2026-05-01T09:30:00+00:00",
+            "interval": "daily",
+            "analysts": ["market"],
+            "research_depth": 1,
+            "llm_provider": "openai",
+            "quick_model": "gpt-5.4-mini",
+            "deep_model": "gpt-5.5",
+            "output_language": "English",
+        },
+    ).json()
+
+    run_due = client.post("/api/scheduler/run-due", headers=headers, json={"now": "2026-05-02T10:00:00+00:00"})
+    assert run_due.status_code == 200
+    result = run_due.json()
+    assert result["executed"] == 1
+    assert result["executions"][0]["schedule_id"] == create["id"]
+    assert result["executions"][0]["status"] == "completed"
+
+    refreshed = client.get(f"/api/schedules/{create['id']}", headers=headers).json()
+    assert refreshed["last_run_at"] is not None
+    assert refreshed["next_run_at"] == "2026-05-03T09:30:00+00:00"
+
+    with sqlite3.connect(db_path) as conn:
+        execution = conn.execute(
+            "select schedule_id, analysis_task_id, status, started_at, completed_at, error from schedule_executions"
+        ).fetchone()
+
+    assert execution[0] == create["id"]
+    assert execution[1] is not None
+    assert execution[2] == "completed"
+    assert execution[3] is not None
+    assert execution[4] is not None
+    assert execution[5] is None

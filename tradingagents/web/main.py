@@ -11,7 +11,17 @@ from sqlite3 import IntegrityError
 
 from .database import WebRepository
 from .runner import DemoAnalysisRunner, TradingAgentsGraphRunner
-from .schemas import AnalysisCreate, AnalysisRerun, LoginRequest, TokenResponse, UserCreate
+from .schemas import (
+    AnalysisCreate,
+    AnalysisRerun,
+    LoginRequest,
+    RunDueRequest,
+    ScheduledAnalysisCreate,
+    ScheduledAnalysisUpdate,
+    TokenResponse,
+    UserCreate,
+)
+from .scheduler import SchedulerService, format_iso_datetime
 from .service import AnalysisService
 from .settings import WebSettings
 
@@ -23,10 +33,12 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
     repository = WebRepository(settings.database_path)
     runner = DemoAnalysisRunner() if settings.runner_mode == "demo" else TradingAgentsGraphRunner()
     service = AnalysisService(repository, runner)
+    scheduler_service = SchedulerService(service)
     app = FastAPI(title="TradingAgents Web", version="0.1.0")
     app.state.settings = settings
     app.state.repository = repository
     app.state.service = service
+    app.state.scheduler_service = scheduler_service
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.cors_origins),
@@ -108,6 +120,62 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
         if not run_tasks_inline:
             background_tasks.add_task(service.run_task, task["id"], AnalysisCreate(**task["parameters"]))
         return task
+
+
+    @app.post("/api/schedules", status_code=201)
+    def create_schedule(payload: ScheduledAnalysisCreate, user: dict = Depends(current_user)) -> dict:
+        return scheduler_service.create_schedule(user["id"], payload)
+
+    @app.get("/api/schedules")
+    def list_schedules(user: dict = Depends(current_user)) -> dict:
+        return {"items": repository.list_schedules_for_user(user["id"])}
+
+    @app.get("/api/schedules/{schedule_id}")
+    def get_schedule(schedule_id: int, user: dict = Depends(current_user)) -> dict:
+        schedule = repository.get_schedule_for_user(schedule_id, user["id"])
+        if not schedule:
+            raise HTTPException(status_code=404, detail="schedule not found")
+        return schedule
+
+    @app.patch("/api/schedules/{schedule_id}")
+    def update_schedule(schedule_id: int, payload: ScheduledAnalysisUpdate, user: dict = Depends(current_user)) -> dict:
+        schedule = repository.update_schedule(schedule_id, user["id"], payload)
+        if not schedule:
+            raise HTTPException(status_code=404, detail="schedule not found")
+        return schedule
+
+    @app.delete("/api/schedules/{schedule_id}", status_code=204)
+    def delete_schedule(schedule_id: int, user: dict = Depends(current_user)) -> Response:
+        if not repository.delete_schedule(schedule_id, user["id"]):
+            raise HTTPException(status_code=404, detail="schedule not found")
+        return Response(status_code=204)
+
+    @app.post("/api/schedules/{schedule_id}/pause")
+    def pause_schedule(schedule_id: int, user: dict = Depends(current_user)) -> dict:
+        schedule = repository.set_schedule_status(schedule_id, user["id"], "paused")
+        if not schedule:
+            raise HTTPException(status_code=404, detail="schedule not found")
+        return schedule
+
+    @app.post("/api/schedules/{schedule_id}/resume")
+    def resume_schedule(schedule_id: int, user: dict = Depends(current_user)) -> dict:
+        schedule = repository.set_schedule_status(schedule_id, user["id"], "active")
+        if not schedule:
+            raise HTTPException(status_code=404, detail="schedule not found")
+        return schedule
+
+    @app.post("/api/schedules/{schedule_id}/trigger", status_code=201)
+    def trigger_schedule(schedule_id: int, user: dict = Depends(current_user)) -> dict:
+        execution = scheduler_service.execute_schedule(user["id"], schedule_id, run_inline=run_tasks_inline, triggered_by="manual")
+        if not execution:
+            raise HTTPException(status_code=404, detail="schedule not found")
+        return execution
+
+    @app.post("/api/scheduler/run-due")
+    def run_due_schedules(payload: RunDueRequest, user: dict = Depends(current_user)) -> dict:
+        now = format_iso_datetime(payload.now) if payload.now else None
+        executions = scheduler_service.run_due_for_user(user["id"], now=now, run_inline=run_tasks_inline)
+        return {"executed": len(executions), "executions": executions}
 
     def event_stream(task_id: int, user: dict) -> StreamingResponse:
         task = repository.get_task_for_user(task_id, user["id"])

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .auth import expires_at, hash_password, new_token, token_hash, utcnow, verify_password
-from .schemas import AnalysisCreate, EventPayload
+from .schemas import AnalysisCreate, EventPayload, ScheduledAnalysisCreate, ScheduledAnalysisUpdate
 
 
 class WebRepository:
@@ -93,6 +94,42 @@ class WebRepository:
                     raw_decision text,
                     payload_json text not null,
                     created_at text not null
+                );
+                create table if not exists schedules (
+                    id integer primary key autoincrement,
+                    user_id integer not null references users(id) on delete cascade,
+                    name text not null,
+                    status text not null,
+                    ticker text not null,
+                    start_at text not null,
+                    next_run_at text not null,
+                    last_run_at text,
+                    interval text not null,
+                    analysts_json text not null,
+                    research_depth integer not null,
+                    llm_provider text not null,
+                    backend_url text,
+                    quick_model text not null,
+                    deep_model text not null,
+                    output_language text not null,
+                    analysis_date text,
+                    analysis_date_policy text not null,
+                    google_thinking_level text,
+                    openai_reasoning_effort text,
+                    anthropic_effort text,
+                    created_at text not null,
+                    updated_at text not null,
+                    deleted_at text
+                );
+                create table if not exists schedule_executions (
+                    id integer primary key autoincrement,
+                    schedule_id integer not null references schedules(id) on delete cascade,
+                    analysis_task_id integer references analysis_tasks(id) on delete set null,
+                    status text not null,
+                    triggered_by text not null,
+                    started_at text not null,
+                    completed_at text,
+                    error text
                 );
                 """
             )
@@ -268,6 +305,174 @@ class WebRepository:
                 result["report_sections"] = [dict(row) for row in sections]
                 result["final_decision"] = json.loads(final["payload_json"]) if final else None
             return result
+
+
+    def create_schedule(self, user_id: int, payload: ScheduledAnalysisCreate) -> dict[str, Any]:
+        now = utcnow()
+        start_at = self._format_datetime(payload.start_at)
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                insert into schedules(
+                    user_id, name, status, ticker, start_at, next_run_at, interval, analysts_json,
+                    research_depth, llm_provider, backend_url, quick_model, deep_model, output_language,
+                    analysis_date, analysis_date_policy, google_thinking_level, openai_reasoning_effort,
+                    anthropic_effort, created_at, updated_at
+                ) values (?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    payload.name,
+                    payload.ticker,
+                    start_at,
+                    start_at,
+                    payload.interval,
+                    json.dumps(payload.analysts),
+                    payload.research_depth,
+                    payload.llm_provider,
+                    payload.backend_url,
+                    payload.quick_model,
+                    payload.deep_model,
+                    payload.output_language,
+                    payload.analysis_date.isoformat() if payload.analysis_date else None,
+                    payload.analysis_date_policy,
+                    payload.google_thinking_level,
+                    payload.openai_reasoning_effort,
+                    payload.anthropic_effort,
+                    now,
+                    now,
+                ),
+            )
+        return self.get_schedule_for_user(cur.lastrowid, user_id)  # type: ignore[return-value]
+
+    def list_schedules_for_user(self, user_id: int) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "select * from schedules where user_id = ? and deleted_at is null order by created_at desc, id desc",
+                (user_id,),
+            ).fetchall()
+        return [self._schedule_dict(row) for row in rows]
+
+    def get_schedule_for_user(self, schedule_id: int, user_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "select * from schedules where id = ? and user_id = ? and deleted_at is null",
+                (schedule_id, user_id),
+            ).fetchone()
+            if not row:
+                return None
+            schedule = self._schedule_dict(row)
+            executions = conn.execute(
+                "select * from schedule_executions where schedule_id = ? order by started_at desc, id desc limit 10",
+                (schedule_id,),
+            ).fetchall()
+            schedule["executions"] = [dict(item) for item in executions]
+            return schedule
+
+    def update_schedule(self, schedule_id: int, user_id: int, payload: ScheduledAnalysisUpdate) -> dict[str, Any] | None:
+        current = self.get_schedule_for_user(schedule_id, user_id)
+        if not current:
+            return None
+        updates = payload.model_dump(exclude_unset=True)
+        if not updates:
+            return current
+        fields = []
+        values: list[Any] = []
+        for key, value in updates.items():
+            db_key = key
+            if key == "analysts":
+                value = json.dumps(value)
+                db_key = "analysts_json"
+            elif key == "start_at" and value is not None:
+                value = self._format_datetime(value)
+                fields.append("next_run_at = ?")
+                values.append(value)
+            elif hasattr(value, "isoformat"):
+                value = value.isoformat()
+            fields.append(f"{db_key} = ?")
+            values.append(value)
+        fields.append("updated_at = ?")
+        values.append(utcnow())
+        values.extend([schedule_id, user_id])
+        with self.connect() as conn:
+            conn.execute(
+                f"update schedules set {', '.join(fields)} where id = ? and user_id = ? and deleted_at is null",
+                tuple(values),
+            )
+        return self.get_schedule_for_user(schedule_id, user_id)
+
+    def set_schedule_status(self, schedule_id: int, user_id: int, status: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            conn.execute(
+                "update schedules set status = ?, updated_at = ? where id = ? and user_id = ? and deleted_at is null",
+                (status, utcnow(), schedule_id, user_id),
+            )
+        return self.get_schedule_for_user(schedule_id, user_id)
+
+    def delete_schedule(self, schedule_id: int, user_id: int) -> bool:
+        with self.connect() as conn:
+            cur = conn.execute(
+                "update schedules set deleted_at = ?, updated_at = ? where id = ? and user_id = ? and deleted_at is null",
+                (utcnow(), utcnow(), schedule_id, user_id),
+            )
+            return cur.rowcount > 0
+
+    def list_due_schedules_for_user(self, user_id: int, now: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select * from schedules
+                where user_id = ? and status = 'active' and deleted_at is null and next_run_at <= ?
+                order by next_run_at asc, id asc
+                """,
+                (user_id, now),
+            ).fetchall()
+        return [self._schedule_dict(row) for row in rows]
+
+    def create_schedule_execution(self, schedule_id: int, *, status: str, started_at: str, triggered_by: str) -> dict[str, Any]:
+        with self.connect() as conn:
+            cur = conn.execute(
+                "insert into schedule_executions(schedule_id, status, triggered_by, started_at) values (?, ?, ?, ?)",
+                (schedule_id, status, triggered_by, started_at),
+            )
+        return self.get_schedule_execution(cur.lastrowid)  # type: ignore[return-value]
+
+    def complete_schedule_execution(
+        self,
+        execution_id: int,
+        analysis_task_id: int | None,
+        status: str,
+        *,
+        completed_at: str,
+        error: str | None = None,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "update schedule_executions set analysis_task_id = ?, status = ?, completed_at = ?, error = ? where id = ?",
+                (analysis_task_id, status, completed_at, error, execution_id),
+            )
+
+    def get_schedule_execution(self, execution_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("select * from schedule_executions where id = ?", (execution_id,)).fetchone()
+            return dict(row) if row else None
+
+    def update_schedule_after_execution(self, schedule_id: int, *, last_run_at: str, next_run_at: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "update schedules set last_run_at = ?, next_run_at = ?, updated_at = ? where id = ?",
+                (last_run_at, next_run_at, utcnow(), schedule_id),
+            )
+
+    def _schedule_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        data = dict(row)
+        data["analysts"] = json.loads(data.pop("analysts_json"))
+        return data
+
+    def _format_datetime(self, value: datetime) -> str:
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).replace(microsecond=0).isoformat()
 
     def _event_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)

@@ -10,8 +10,48 @@ export type AnalysisParams = {
   output_language: string;
 };
 
-export type AnalysisTask = { id: number; status: string; ticker?: string; analysis_date?: string; decision?: string | null; parameters?: AnalysisParams; final_decision?: { decision: string; rationale: string } | null; report_sections?: { section_name: string; content: string }[]; events?: AgentEvent[] };
+export type AnalysisTask = {
+  id: number;
+  status: string;
+  ticker?: string;
+  analysis_date?: string;
+  decision?: string | null;
+  parameters?: AnalysisParams;
+  final_decision?: { decision: string; rationale: string } | null;
+  report_sections?: { section_name: string; content: string }[];
+  events?: AgentEvent[];
+};
+
 export type AgentEvent = { sequence: number; agent: string; event_type: string; message: string; created_at: string };
+export type ScheduleInterval = 'daily' | 'weekly' | 'monthly';
+export type ScheduleStatus = 'active' | 'paused';
+
+export type SchedulePayload = Omit<AnalysisParams, 'analysis_date'> & {
+  name: string;
+  analysis_date?: string;
+  start_at: string;
+  interval: ScheduleInterval;
+  analysis_date_policy?: 'run_date' | 'fixed';
+};
+
+export type Schedule = SchedulePayload & {
+  id: number;
+  status: ScheduleStatus;
+  next_run_at: string;
+  last_run_at?: string | null;
+  executions?: ScheduleExecution[];
+};
+
+export type ScheduleExecution = {
+  id: number;
+  schedule_id: number;
+  analysis_task_id?: number | null;
+  status: string;
+  triggered_by: string;
+  started_at: string;
+  completed_at?: string | null;
+  error?: string | null;
+};
 
 const API_BASE = import.meta.env.VITE_TRADINGAGENTS_API ?? 'http://localhost:8000';
 
@@ -33,6 +73,14 @@ export const api = {
   listAnalyses: (token: string) => request<{ items: AnalysisTask[] }>('/api/analyses', token),
   getAnalysis: (token: string, id: number) => request<AnalysisTask>(`/api/analyses/${id}`, token),
   rerun: (token: string, id: number, overrides: Partial<AnalysisParams>) => request<AnalysisTask>(`/api/analyses/${id}/rerun`, token, { method: 'POST', body: JSON.stringify(overrides) }),
+  listSchedules: (token: string) => request<{ items: Schedule[] }>('/api/schedules', token),
+  getSchedule: (token: string, id: number) => request<Schedule>(`/api/schedules/${id}`, token),
+  createSchedule: (token: string, payload: SchedulePayload) => request<Schedule>('/api/schedules', token, { method: 'POST', body: JSON.stringify(payload) }),
+  updateSchedule: (token: string, id: number, payload: Partial<SchedulePayload>) => request<Schedule>(`/api/schedules/${id}`, token, { method: 'PATCH', body: JSON.stringify(payload) }),
+  pauseSchedule: (token: string, id: number) => request<Schedule>(`/api/schedules/${id}/pause`, token, { method: 'POST' }),
+  resumeSchedule: (token: string, id: number) => request<Schedule>(`/api/schedules/${id}/resume`, token, { method: 'POST' }),
+  deleteSchedule: (token: string, id: number) => request<void>(`/api/schedules/${id}`, token, { method: 'DELETE' }),
+  triggerSchedule: (token: string, id: number) => request<ScheduleExecution>(`/api/schedules/${id}/trigger`, token, { method: 'POST' }),
   streamUrl: (id: number) => `${API_BASE}/api/analyses/${id}/events`
 };
 
