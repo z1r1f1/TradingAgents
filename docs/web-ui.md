@@ -175,6 +175,17 @@ By default, executions use the run date as the generated Phase 1 task's analysis
 
 Manual and due executions create ordinary rows in `analysis_tasks`, `task_parameters`, `agent_event_logs`, `report_sections`, and `final_decisions`, so Phase 1 history and realtime event behavior continue to work.
 
+## Phase 8 operator usage reporting
+
+The current frontend exposes a Phase 8 operator/governance report for the APIs that already exist in this build. It does **not** assume unreleased operator endpoints.
+
+- The report is derived from `GET /api/governance/audit` plus `GET /api/health`.
+- Audit filters remain workspace-scoped and can narrow by target user id, event type, and ISO start/end timestamps.
+- The UI summarizes analysis launches, schedule triggers, intervention continuations, blocked real-runner attempts, and duplicate-suppression events already present in the audit log.
+- Blocked-run reasons are read from audit metadata, for example `user budget exceeded` or `workspace budget exceeded`.
+- Cluster/runtime warnings are displayed only from the existing health response fields (`runtime_mode`, storage backend, coordination backend, and dependency configuration flags).
+- Dedicated migration, reconciliation, or provider-usage operator views should only be added after the backend exposes stable routes for those resources.
+
 ### Frontend scheduler UI
 
 The React UI includes a scheduled-analysis panel with:
