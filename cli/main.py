@@ -1,5 +1,7 @@
 from typing import Optional
 import datetime
+import hashlib
+import os
 import typer
 from pathlib import Path
 from functools import wraps
@@ -10,7 +12,6 @@ from dotenv import load_dotenv
 load_dotenv()
 load_dotenv(".env.enterprise", override=False)
 from rich.panel import Panel
-from rich.spinner import Spinner
 from rich.live import Live
 from rich.columns import Columns
 from rich.markdown import Markdown
@@ -31,6 +32,15 @@ from cli.utils import *
 from cli.announcements import fetch_announcements, display_announcements
 from cli.stats_handler import StatsCallbackHandler
 from tradingagents.utils.timezone import now as local_now, timestamp as local_timestamp
+from tradingagents.utils.telegram import (
+    maybe_send_analysis_to_telegram,
+    maybe_send_report_to_telegram,
+)
+
+DEFAULT_FIXED_RESEARCH_DEPTH = 5
+DEFAULT_FIXED_REASONING_EFFORT = "high"
+DEFAULT_UI_REFRESH_PER_SECOND = 0.5
+DEFAULT_UI_UPDATE_INTERVAL_SECONDS = 2.0
 
 console = Console()
 
@@ -254,6 +264,47 @@ def format_tokens(n):
     return str(n)
 
 
+def _env_float(name: str, default: float, min_value: float) -> float:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        parsed = float(value.strip())
+    except ValueError:
+        return default
+    return parsed if parsed >= min_value else default
+
+
+def get_ui_live_refresh_per_second() -> float:
+    """Live repaint frequency. Lower values reduce terminal flicker."""
+    return _env_float(
+        "TRADINGAGENTS_UI_REFRESH_PER_SECOND",
+        DEFAULT_UI_REFRESH_PER_SECOND,
+        0.1,
+    )
+
+
+def get_ui_update_interval_seconds() -> float:
+    """Minimum interval between expensive layout rebuilds during streaming."""
+    return _env_float(
+        "TRADINGAGENTS_UI_UPDATE_INTERVAL_SECONDS",
+        DEFAULT_UI_UPDATE_INTERVAL_SECONDS,
+        0.0,
+    )
+
+
+def should_refresh_live_display(
+    now_ts: float,
+    last_update_ts: float,
+    min_interval_seconds: float,
+    *,
+    force: bool = False,
+) -> bool:
+    if force:
+        return True
+    return (now_ts - last_update_ts) >= min_interval_seconds
+
+
 def update_display(layout, spinner_text=None, stats_handler=None, start_time=None):
     # Header with welcome message
     layout["header"].update(
@@ -307,10 +358,7 @@ def update_display(layout, spinner_text=None, stats_handler=None, start_time=Non
         first_agent = agents[0]
         status = message_buffer.agent_status.get(first_agent, "pending")
         if status == "in_progress":
-            spinner = Spinner(
-                "dots", text="[blue]in_progress[/blue]", style="bold cyan"
-            )
-            status_cell = spinner
+            status_cell = "[blue]in_progress[/blue]"
         else:
             status_color = {
                 "pending": "yellow",
@@ -324,10 +372,7 @@ def update_display(layout, spinner_text=None, stats_handler=None, start_time=Non
         for agent in agents[1:]:
             status = message_buffer.agent_status.get(agent, "pending")
             if status == "in_progress":
-                spinner = Spinner(
-                    "dots", text="[blue]in_progress[/blue]", style="bold cyan"
-                )
-                status_cell = spinner
+                status_cell = "[blue]in_progress[/blue]"
             else:
                 status_color = {
                     "pending": "yellow",
@@ -618,13 +663,13 @@ def build_fixed_selections(
     ticker: str,
     analysis_date: Optional[str] = None,
     analysts: str = "market,social,news,fundamentals",
-    research_depth: int = 1,
+    research_depth: int = DEFAULT_FIXED_RESEARCH_DEPTH,
     llm_provider: Optional[str] = None,
     backend_url: Optional[str] = None,
     shallow_thinker: Optional[str] = None,
     deep_thinker: Optional[str] = None,
     output_language: Optional[str] = None,
-    reasoning_effort: Optional[str] = None,
+    reasoning_effort: Optional[str] = DEFAULT_FIXED_REASONING_EFFORT,
 ):
     """Build selections from CLI flags so routine runs can skip prompts."""
 
@@ -1042,6 +1087,7 @@ def run_analysis(
     report_dir.mkdir(parents=True, exist_ok=True)
     log_file = results_dir / "message_tool.log"
     log_file.touch(exist_ok=True)
+    sent_report_hashes: dict[str, str] = {}
 
     def save_message_decorator(obj, func_name):
         func = getattr(obj, func_name)
@@ -1075,8 +1121,24 @@ def run_analysis(
                 if content:
                     file_name = f"{section_name}.md"
                     text = "\n".join(str(item) for item in content) if isinstance(content, list) else content
-                    with open(report_dir / file_name, "w", encoding="utf-8") as f:
+                    report_path = report_dir / file_name
+                    with open(report_path, "w", encoding="utf-8") as f:
                         f.write(text)
+
+                    report_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                    if sent_report_hashes.get(section_name) != report_hash:
+                        sent_report_hashes[section_name] = report_hash
+                        try:
+                            telegram_status = maybe_send_report_to_telegram(
+                                ticker=selections["ticker"],
+                                analysis_date=selections["analysis_date"],
+                                report_path=report_path,
+                                section_name=section_name,
+                            )
+                            if telegram_status:
+                                console.print(f"[green]✓ {telegram_status}[/green]")
+                        except Exception as e:
+                            console.print(f"[yellow]Telegram report delivery skipped/failed: {e}[/yellow]")
         return wrapper
 
     message_buffer.add_message = save_message_decorator(message_buffer, "add_message")
@@ -1085,10 +1147,31 @@ def run_analysis(
 
     # Now start the display layout
     layout = create_layout()
+    live_refresh_per_second = get_ui_live_refresh_per_second()
+    ui_update_interval = get_ui_update_interval_seconds()
+    last_display_update = 0.0
+    current_spinner_text = None
 
-    with Live(layout, refresh_per_second=4) as live:
+    def refresh_display(force: bool = False):
+        nonlocal last_display_update
+        now_ts = time.monotonic()
+        if should_refresh_live_display(
+            now_ts,
+            last_display_update,
+            ui_update_interval,
+            force=force,
+        ):
+            update_display(
+                layout,
+                current_spinner_text,
+                stats_handler=stats_handler,
+                start_time=start_time,
+            )
+            last_display_update = now_ts
+
+    with Live(layout, refresh_per_second=live_refresh_per_second) as live:
         # Initial display
-        update_display(layout, stats_handler=stats_handler, start_time=start_time)
+        refresh_display(force=True)
 
         # Add initial messages
         message_buffer.add_message("System", f"Selected ticker: {selections['ticker']}")
@@ -1099,18 +1182,18 @@ def run_analysis(
             "System",
             f"Selected analysts: {', '.join(analyst.value for analyst in selections['analysts'])}",
         )
-        update_display(layout, stats_handler=stats_handler, start_time=start_time)
+        refresh_display(force=True)
 
         # Update agent status to in_progress for the first analyst
         first_analyst = f"{selections['analysts'][0].value.capitalize()} Analyst"
         message_buffer.update_agent_status(first_analyst, "in_progress")
-        update_display(layout, stats_handler=stats_handler, start_time=start_time)
+        refresh_display(force=True)
 
-        # Create spinner text
-        spinner_text = (
+        # Create status text
+        current_spinner_text = (
             f"Analyzing {selections['ticker']} on {selections['analysis_date']}..."
         )
-        update_display(layout, spinner_text, stats_handler=stats_handler, start_time=start_time)
+        refresh_display(force=True)
 
         # Initialize state and get graph args with callbacks
         init_agent_state = graph.propagator.create_initial_state(
@@ -1216,8 +1299,8 @@ def run_analysis(
                         message_buffer.update_agent_status("Neutral Analyst", "completed")
                         message_buffer.update_agent_status("Portfolio Manager", "completed")
 
-            # Update the display
-            update_display(layout, stats_handler=stats_handler, start_time=start_time)
+            # Update the display, throttled to avoid high-frequency terminal flicker
+            refresh_display()
 
             trace.append(chunk)
 
@@ -1238,7 +1321,7 @@ def run_analysis(
             if section in final_state:
                 message_buffer.update_report_section(section, final_state[section])
 
-        update_display(layout, stats_handler=stats_handler, start_time=start_time)
+        refresh_display(force=True)
 
     # Post-analysis prompts (outside Live context for clean interaction)
     console.print("\n[bold cyan]Analysis Complete![/bold cyan]\n")
@@ -1268,6 +1351,20 @@ def run_analysis(
             console.print(f"  [dim]Complete report:[/dim] {report_file.name}")
         except Exception as e:
             console.print(f"[red]Error saving report: {e}[/red]")
+
+    try:
+        telegram_status = maybe_send_analysis_to_telegram(
+            ticker=selections["ticker"],
+            analysis_date=selections["analysis_date"],
+            results_dir=results_dir,
+            report_dir=report_dir,
+            log_file=log_file,
+            final_decision=final_state.get("final_trade_decision"),
+        )
+        if telegram_status:
+            console.print(f"[green]✓ {telegram_status}[/green]")
+    except Exception as e:
+        console.print(f"[yellow]Telegram delivery skipped/failed: {e}[/yellow]")
 
     # Prompt to display full report
     if prompt_after_run:
@@ -1306,12 +1403,14 @@ def analyze(
     analysts: str = typer.Option(
         "market,social,news,fundamentals",
         "--analysts",
-        help="Comma-separated analysts: market,social,news,fundamentals.",
+        envvar="TRADINGAGENTS_ANALYSTS",
+        help="Comma-separated analysts: market,social,news,fundamentals. Defaults to TRADINGAGENTS_ANALYSTS or all analysts.",
     ),
     depth: int = typer.Option(
-        1,
+        DEFAULT_FIXED_RESEARCH_DEPTH,
         "--depth",
-        help="Research/debate depth. 1=shallow, 3=medium, 5=deep.",
+        envvar="TRADINGAGENTS_DEPTH",
+        help="Research/debate depth. 1=shallow, 3=medium, 5=deep. Defaults to TRADINGAGENTS_DEPTH or 5.",
     ),
     llm_provider: Optional[str] = typer.Option(
         None,
@@ -1326,11 +1425,13 @@ def analyze(
     quick_model: Optional[str] = typer.Option(
         None,
         "--quick-model",
+        envvar="TRADINGAGENTS_QUICK_MODEL",
         help="Quick-thinking model. Defaults to TRADINGAGENTS_QUICK_MODEL/default_config.",
     ),
     deep_model: Optional[str] = typer.Option(
         None,
         "--deep-model",
+        envvar="TRADINGAGENTS_DEEP_MODEL",
         help="Deep-thinking model. Defaults to TRADINGAGENTS_DEEP_MODEL/default_config.",
     ),
     output_language: Optional[str] = typer.Option(
@@ -1339,9 +1440,10 @@ def analyze(
         help="Report language. Defaults to TRADINGAGENTS_OUTPUT_LANGUAGE/default_config.",
     ),
     reasoning_effort: Optional[str] = typer.Option(
-        None,
+        DEFAULT_FIXED_REASONING_EFFORT,
         "--reasoning-effort",
-        help="OpenAI reasoning effort, e.g. low/medium/high.",
+        envvar="TRADINGAGENTS_REASONING_EFFORT",
+        help="OpenAI reasoning effort, e.g. low/medium/high. Defaults to TRADINGAGENTS_REASONING_EFFORT or high.",
     ),
     save_report_flag: bool = typer.Option(
         False,
