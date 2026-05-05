@@ -248,3 +248,50 @@ The context is capped at **4000 characters** before being passed to the web runn
 - Memory content may contain prior model outputs and market data summaries; treat SQLite backups and exports as sensitive user data.
 - Phase 3 uses simple SQLite text filtering, not semantic retrieval or embeddings.
 - Production deployments should add retention policies, audit review, export/delete controls, and compliance governance before relying on memories for regulated workflows.
+
+## Phase 4 human-in-the-loop intervention
+
+Phase 4 adds auditable human-guided continuation sessions for a selected agent on a completed analysis task. It does **not** mutate a running LangGraph node, rewrite the original report, or change CLI execution. Continuations are stored separately and linked to the source task.
+
+### Intervention API routes
+
+All intervention routes require bearer authentication and are owner-scoped through the source analysis task:
+
+- `GET /api/interventions` — list the current user's sessions.
+- `POST /api/interventions` — create a session with `source_analysis_task_id` and `target_agent_name`.
+- `GET /api/interventions/{session_id}` — view session detail, messages, events, and outputs.
+- `POST /api/interventions/{session_id}/messages` — append explicit user guidance to an open session.
+- `POST /api/interventions/{session_id}/pause` — pause a session.
+- `POST /api/interventions/{session_id}/resume` — reopen a paused session.
+- `POST /api/interventions/{session_id}/close` — close a session and reject future messages.
+- `POST /api/interventions/{session_id}/run` — run a bounded continuation for the target agent.
+
+### SQLite intervention tables
+
+- `intervention_sessions`: owner, source analysis task, target agent, status, created/updated/closed timestamps.
+- `intervention_messages`: ordered user guidance messages with author, content, timestamp, and sequence.
+- `intervention_events`: ordered continuation progress/audit events.
+- `intervention_outputs`: human-guided continuation outputs plus bounded context metadata.
+
+### Continuation design
+
+The continuation runner is a separate web-only seam. It builds bounded context from:
+
+- source task id and target agent;
+- the original output for the target agent when available;
+- attached memories already linked to the source analysis task;
+- ordered user guidance messages in the intervention session.
+
+The continuation context is capped at **4000 characters**. Outputs are inserted into `intervention_outputs` and progress is inserted into `intervention_events`. Original `report_sections`, `final_decisions`, and Phase 1 event logs are not overwritten, so the original analysis remains auditable and distinguishable from human-guided continuation output.
+
+### Frontend intervention UI
+
+The analysis detail/realtime area includes agent-level intervention controls. Users can start a session for a target agent, inspect linked sessions, add guidance, pause/resume/close, trigger continuation, and view the timeline of user messages, continuation events, and generated continuation output. Labels intentionally show task id, target agent, and status to distinguish continuation output from original analysis.
+
+### Limitations and safety cautions
+
+- Phase 4 does not provide true mid-node live graph mutation.
+- Sessions are single-user and owner-scoped; no collaborative intervention is implemented.
+- Continuation output is deterministic and auditable in local/demo mode. Real model-backed continuation should add provider cost/rate controls before production use.
+- No file upload, voice/video, rich document annotation, compliance approval workflow, Redis/Celery/Postgres, or external workflow engine is included.
+- Production deployments should add audit export, retention/delete workflows, stronger admin provisioning, rate limits, and a dedicated security review before internet exposure.

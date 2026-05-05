@@ -156,6 +156,43 @@ class WebRepository:
                     created_at text not null,
                     primary key (schedule_id, memory_id)
                 );
+                create table if not exists intervention_sessions (
+                    id integer primary key autoincrement,
+                    user_id integer not null references users(id) on delete cascade,
+                    source_analysis_task_id integer not null references analysis_tasks(id) on delete cascade,
+                    target_agent_name text not null,
+                    status text not null,
+                    created_at text not null,
+                    updated_at text not null,
+                    closed_at text
+                );
+                create table if not exists intervention_messages (
+                    id integer primary key autoincrement,
+                    session_id integer not null references intervention_sessions(id) on delete cascade,
+                    sequence integer not null,
+                    author text not null,
+                    content text not null,
+                    created_at text not null,
+                    unique(session_id, sequence)
+                );
+                create table if not exists intervention_events (
+                    id integer primary key autoincrement,
+                    session_id integer not null references intervention_sessions(id) on delete cascade,
+                    sequence integer not null,
+                    event_type text not null,
+                    message text not null,
+                    payload_json text not null,
+                    created_at text not null,
+                    unique(session_id, sequence)
+                );
+                create table if not exists intervention_outputs (
+                    id integer primary key autoincrement,
+                    session_id integer not null references intervention_sessions(id) on delete cascade,
+                    target_agent_name text not null,
+                    content text not null,
+                    context_json text not null,
+                    created_at text not null
+                );
                 """
             )
 
@@ -341,6 +378,7 @@ class WebRepository:
                 result["report_sections"] = [dict(row) for row in sections]
                 result["final_decision"] = json.loads(final["payload_json"]) if final else None
                 result["attached_memories"] = self.list_attached_memories(conn, task_id)
+                result["intervention_sessions"] = self.list_interventions_for_task(conn, task_id)
             return result
 
 
@@ -693,6 +731,121 @@ class WebRepository:
         data = dict(row)
         data["tags"] = json.loads(data.pop("tags_json"))
         data["archived"] = bool(data["archived"])
+        return data
+
+
+    def create_intervention_session(self, user_id: int, source_analysis_task_id: int, target_agent_name: str) -> dict[str, Any] | None:
+        if not self.get_task_for_user(source_analysis_task_id, user_id, include_detail=False):
+            return None
+        now = utcnow()
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                insert into intervention_sessions(user_id, source_analysis_task_id, target_agent_name, status, created_at, updated_at)
+                values (?, ?, ?, 'open', ?, ?)
+                """,
+                (user_id, source_analysis_task_id, target_agent_name, now, now),
+            )
+        return self.get_intervention_for_user(cur.lastrowid, user_id)
+
+    def list_interventions_for_user(self, user_id: int) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "select * from intervention_sessions where user_id = ? order by created_at desc, id desc",
+                (user_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_interventions_for_task(self, conn: sqlite3.Connection, task_id: int) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            "select * from intervention_sessions where source_analysis_task_id = ? order by created_at desc, id desc",
+            (task_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_intervention_for_user(self, session_id: int, user_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "select * from intervention_sessions where id = ? and user_id = ?",
+                (session_id, user_id),
+            ).fetchone()
+            if not row:
+                return None
+            session = dict(row)
+            messages = conn.execute(
+                "select * from intervention_messages where session_id = ? order by sequence asc",
+                (session_id,),
+            ).fetchall()
+            events = conn.execute(
+                "select * from intervention_events where session_id = ? order by sequence asc",
+                (session_id,),
+            ).fetchall()
+            outputs = conn.execute(
+                "select * from intervention_outputs where session_id = ? order by created_at asc, id asc",
+                (session_id,),
+            ).fetchall()
+            session["messages"] = [dict(item) for item in messages]
+            session["events"] = [self._intervention_event_dict(item) for item in events]
+            session["outputs"] = [self._intervention_output_dict(item) for item in outputs]
+            return session
+
+    def append_intervention_message(self, session_id: int, user_id: int, content: str) -> dict[str, Any] | None:
+        session = self.get_intervention_for_user(session_id, user_id)
+        if not session or session["status"] != "open":
+            return None
+        with self.connect() as conn:
+            current = conn.execute("select coalesce(max(sequence), 0) from intervention_messages where session_id = ?", (session_id,)).fetchone()[0]
+            sequence = int(current) + 1
+            created_at = utcnow()
+            cur = conn.execute(
+                "insert into intervention_messages(session_id, sequence, author, content, created_at) values (?, ?, 'user', ?, ?)",
+                (session_id, sequence, content, created_at),
+            )
+            conn.execute("update intervention_sessions set updated_at = ? where id = ?", (created_at, session_id))
+            row = conn.execute("select * from intervention_messages where id = ?", (cur.lastrowid,)).fetchone()
+            return dict(row)
+
+    def set_intervention_status(self, session_id: int, user_id: int, status: str) -> dict[str, Any] | None:
+        current = self.get_intervention_for_user(session_id, user_id)
+        if not current:
+            return None
+        closed_at = utcnow() if status == "closed" else None
+        with self.connect() as conn:
+            conn.execute(
+                "update intervention_sessions set status = ?, updated_at = ?, closed_at = coalesce(?, closed_at) where id = ? and user_id = ?",
+                (status, utcnow(), closed_at, session_id, user_id),
+            )
+        return self.get_intervention_for_user(session_id, user_id)
+
+    def append_intervention_event(self, session_id: int, event_type: str, message: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        with self.connect() as conn:
+            current = conn.execute("select coalesce(max(sequence), 0) from intervention_events where session_id = ?", (session_id,)).fetchone()[0]
+            sequence = int(current) + 1
+            created_at = utcnow()
+            cur = conn.execute(
+                "insert into intervention_events(session_id, sequence, event_type, message, payload_json, created_at) values (?, ?, ?, ?, ?, ?)",
+                (session_id, sequence, event_type, message, json.dumps(payload or {}), created_at),
+            )
+            row = conn.execute("select * from intervention_events where id = ?", (cur.lastrowid,)).fetchone()
+            return self._intervention_event_dict(row)
+
+    def create_intervention_output(self, session_id: int, *, target_agent_name: str, content: str, context: dict[str, Any]) -> dict[str, Any]:
+        with self.connect() as conn:
+            cur = conn.execute(
+                "insert into intervention_outputs(session_id, target_agent_name, content, context_json, created_at) values (?, ?, ?, ?, ?)",
+                (session_id, target_agent_name, content, json.dumps(context), utcnow()),
+            )
+            row = conn.execute("select * from intervention_outputs where id = ?", (cur.lastrowid,)).fetchone()
+            return self._intervention_output_dict(row)
+
+    def _intervention_event_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        data = dict(row)
+        data["payload"] = json.loads(data.pop("payload_json"))
+        return data
+
+    def _intervention_output_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        data = dict(row)
+        data["context"] = json.loads(data.pop("context_json"))
         return data
 
     def _event_dict(self, row: sqlite3.Row) -> dict[str, Any]:

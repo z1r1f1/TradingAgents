@@ -22,6 +22,7 @@ export type AnalysisTask = {
   report_sections?: { section_name: string; content: string }[];
   events?: AgentEvent[];
   attached_memories?: AgentMemory[];
+  intervention_sessions?: InterventionSession[];
 };
 
 export type AgentEvent = { sequence: number; agent: string; event_type: string; message: string; created_at: string };
@@ -55,6 +56,24 @@ export type Schedule = SchedulePayload & {
   next_run_at: string;
   last_run_at?: string | null;
   executions?: ScheduleExecution[];
+};
+
+export type InterventionStatus = 'open' | 'paused' | 'closed' | 'failed';
+export type InterventionMessage = { id: number; session_id: number; sequence: number; author: string; content: string; created_at: string };
+export type InterventionEvent = { id: number; session_id: number; sequence: number; event_type: string; message: string; payload: Record<string, unknown>; created_at: string };
+export type InterventionOutput = { id: number; session_id: number; target_agent_name: string; content: string; context: Record<string, unknown>; created_at: string };
+export type InterventionSession = {
+  id: number;
+  user_id: number;
+  source_analysis_task_id: number;
+  target_agent_name: string;
+  status: InterventionStatus;
+  created_at: string;
+  updated_at: string;
+  closed_at?: string | null;
+  messages?: InterventionMessage[];
+  events?: InterventionEvent[];
+  outputs?: InterventionOutput[];
 };
 
 export type ScheduleExecution = {
@@ -100,6 +119,14 @@ export const api = {
   getMemory: (token: string, id: number) => request<AgentMemory>(`/api/memories/${id}`, token),
   archiveMemory: (token: string, id: number) => request<AgentMemory>(`/api/memories/${id}/archive`, token, { method: 'POST' }),
   unarchiveMemory: (token: string, id: number) => request<AgentMemory>(`/api/memories/${id}/unarchive`, token, { method: 'POST' }),
+  listInterventions: (token: string) => request<{ items: InterventionSession[] }>('/api/interventions', token),
+  getIntervention: (token: string, id: number) => request<InterventionSession>(`/api/interventions/${id}`, token),
+  createIntervention: (token: string, sourceTaskId: number, targetAgentName: string) => request<InterventionSession>('/api/interventions', token, { method: 'POST', body: JSON.stringify({ source_analysis_task_id: sourceTaskId, target_agent_name: targetAgentName }) }),
+  appendInterventionMessage: (token: string, id: number, content: string) => request<InterventionMessage>(`/api/interventions/${id}/messages`, token, { method: 'POST', body: JSON.stringify({ content }) }),
+  pauseIntervention: (token: string, id: number) => request<InterventionSession>(`/api/interventions/${id}/pause`, token, { method: 'POST' }),
+  resumeIntervention: (token: string, id: number) => request<InterventionSession>(`/api/interventions/${id}/resume`, token, { method: 'POST' }),
+  closeIntervention: (token: string, id: number) => request<InterventionSession>(`/api/interventions/${id}/close`, token, { method: 'POST' }),
+  runIntervention: (token: string, id: number) => request<InterventionOutput>(`/api/interventions/${id}/run`, token, { method: 'POST' }),
   streamUrl: (id: number) => `${API_BASE}/api/analyses/${id}/events`
 };
 

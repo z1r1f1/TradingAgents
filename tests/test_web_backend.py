@@ -511,3 +511,149 @@ def test_schedule_trigger_attaches_configured_memories(tmp_path: Path):
     execution = client.post(f"/api/schedules/{schedule['id']}/trigger", headers=headers).json()
     detail = client.get(f"/api/analyses/{execution['analysis_task_id']}", headers=headers).json()
     assert [memory["id"] for memory in detail["attached_memories"]] == [memory_id]
+
+
+def test_intervention_lifecycle_messages_continuation_and_immutability(tmp_path: Path):
+    client, db_path = make_client(tmp_path)
+    headers = login(client)
+    other_register = client.post(
+        "/api/auth/register",
+        json={"email": "hitl-other@example.com", "password": "correct horse battery staple"},
+    )
+    assert other_register.status_code == 201
+    other_login = client.post(
+        "/api/auth/login",
+        json={"email": "hitl-other@example.com", "password": "correct horse battery staple"},
+    )
+    other_headers = {"Authorization": f"Bearer {other_login.json()['access_token']}"}
+
+    assert client.get("/api/interventions").status_code in {401, 403}
+
+    analysis = client.post(
+        "/api/analyses",
+        headers=headers,
+        json={
+            "ticker": "SPY",
+            "analysis_date": "2026-05-01",
+            "analysts": ["market"],
+            "research_depth": 1,
+            "llm_provider": "openai",
+            "quick_model": "gpt-5.4-mini",
+            "deep_model": "gpt-5.5",
+            "output_language": "English",
+        },
+    ).json()
+    original_detail = client.get(f"/api/analyses/{analysis['id']}", headers=headers).json()
+    original_decision = original_detail["final_decision"]
+    original_sections = list(original_detail["report_sections"])
+
+    created = client.post(
+        "/api/interventions",
+        headers=headers,
+        json={"source_analysis_task_id": analysis["id"], "target_agent_name": "Market Analyst"},
+    )
+    assert created.status_code == 201
+    session = created.json()
+    session_id = session["id"]
+    assert session["status"] == "open"
+    assert session["target_agent_name"] == "Market Analyst"
+    assert client.get(f"/api/interventions/{session_id}", headers=other_headers).status_code == 404
+
+    message = client.post(
+        f"/api/interventions/{session_id}/messages",
+        headers=headers,
+        json={"content": "Re-check demand using the latest channel checks."},
+    )
+    assert message.status_code == 201
+    assert message.json()["sequence"] == 1
+    assert message.json()["author"] == "user"
+
+    paused = client.post(f"/api/interventions/{session_id}/pause", headers=headers)
+    assert paused.status_code == 200
+    assert paused.json()["status"] == "paused"
+    resumed = client.post(f"/api/interventions/{session_id}/resume", headers=headers)
+    assert resumed.status_code == 200
+    assert resumed.json()["status"] == "open"
+
+    continuation = client.post(f"/api/interventions/{session_id}/run", headers=headers)
+    assert continuation.status_code == 201
+    output = continuation.json()
+    assert output["session_id"] == session_id
+    assert output["target_agent_name"] == "Market Analyst"
+    assert "Re-check demand" in output["content"]
+
+    detail = client.get(f"/api/interventions/{session_id}", headers=headers).json()
+    assert detail["messages"][0]["content"].startswith("Re-check demand")
+    assert detail["events"][0]["event_type"] == "continuation.started"
+    assert detail["outputs"][0]["content"] == output["content"]
+
+    linked_analysis = client.get(f"/api/analyses/{analysis['id']}", headers=headers).json()
+    assert [item["id"] for item in linked_analysis["intervention_sessions"]] == [session_id]
+    assert linked_analysis["final_decision"] == original_decision
+    assert linked_analysis["report_sections"] == original_sections
+
+    closed = client.post(f"/api/interventions/{session_id}/close", headers=headers)
+    assert closed.status_code == 200
+    assert closed.json()["status"] == "closed"
+    rejected_message = client.post(
+        f"/api/interventions/{session_id}/messages",
+        headers=headers,
+        json={"content": "should not be accepted after close"},
+    )
+    assert rejected_message.status_code == 409
+    assert client.post(f"/api/interventions/{session_id}/resume", headers=headers).status_code == 409
+
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("select count(*) from intervention_sessions").fetchone()[0] == 1
+        assert conn.execute("select count(*) from intervention_messages").fetchone()[0] == 1
+        assert conn.execute("select count(*) from intervention_events").fetchone()[0] >= 2
+        assert conn.execute("select count(*) from intervention_outputs").fetchone()[0] == 1
+
+
+def test_intervention_continuation_uses_attached_memories_without_cross_user_leak(tmp_path: Path):
+    client, _ = make_client(tmp_path)
+    headers = login(client)
+    first = client.post(
+        "/api/analyses",
+        headers=headers,
+        json={
+            "ticker": "SPY",
+            "analysis_date": "2026-05-01",
+            "analysts": ["market"],
+            "research_depth": 1,
+            "llm_provider": "openai",
+            "quick_model": "gpt-5.4-mini",
+            "deep_model": "gpt-5.5",
+            "output_language": "English",
+        },
+    ).json()
+    memory_id = client.get("/api/memories", headers=headers, params={"agent": "Market Analyst"}).json()["items"][0]["id"]
+    second = client.post(
+        "/api/analyses",
+        headers=headers,
+        json={
+            "ticker": "AAPL",
+            "analysis_date": "2026-05-02",
+            "analysts": ["market"],
+            "research_depth": 1,
+            "llm_provider": "openai",
+            "quick_model": "gpt-5.4-mini",
+            "deep_model": "gpt-5.5",
+            "output_language": "English",
+            "memory_ids": [memory_id],
+        },
+    ).json()
+    session = client.post(
+        "/api/interventions",
+        headers=headers,
+        json={"source_analysis_task_id": second["id"], "target_agent_name": "Market Analyst"},
+    ).json()
+    client.post(
+        f"/api/interventions/{session['id']}/messages",
+        headers=headers,
+        json={"content": "Use attached memory only."},
+    )
+    output = client.post(f"/api/interventions/{session['id']}/run", headers=headers).json()
+    assert "Attached memories: 1" in output["content"]
+    assert "Use attached memory only" in output["content"]
+    assert first["id"] != second["id"]

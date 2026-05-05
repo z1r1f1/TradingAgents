@@ -180,6 +180,15 @@ class RunDueRequest(BaseModel):
     now: datetime | None = None
 
 
+class InterventionCreate(BaseModel):
+    source_analysis_task_id: int
+    target_agent_name: str = Field(min_length=1, max_length=120)
+
+
+class InterventionMessageCreate(BaseModel):
+    content: str = Field(min_length=1, max_length=4000)
+
+
 class MemoryUpdate(BaseModel):
     tags: dict[str, Any] | None = None
     title: str | None = Field(default=None, min_length=1, max_length=200)

@@ -111,3 +111,22 @@ describe('agent memory frontend helpers', () => {
     expect(toggleMemoryId([1, 3], 3)).toEqual([1]);
   });
 });
+
+import { buildInterventionLabel } from './App';
+import type { InterventionSession } from './api';
+
+describe('human intervention frontend helpers', () => {
+  it('labels intervention sessions by source task, agent, and status', () => {
+    const session: InterventionSession = {
+      id: 5,
+      user_id: 1,
+      source_analysis_task_id: 9,
+      target_agent_name: 'Market Analyst',
+      status: 'open',
+      created_at: '2026-05-01T10:00:00+00:00',
+      updated_at: '2026-05-01T10:00:00+00:00'
+    };
+
+    expect(buildInterventionLabel(session)).toBe('#5 · Task 9 · Market Analyst · open');
+  });
+});

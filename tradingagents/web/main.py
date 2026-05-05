@@ -10,10 +10,13 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlite3 import IntegrityError
 
 from .database import WebRepository
+from .intervention import InterventionService
 from .runner import DemoAnalysisRunner, TradingAgentsGraphRunner
 from .schemas import (
     AnalysisCreate,
     AnalysisRerun,
+    InterventionCreate,
+    InterventionMessageCreate,
     LoginRequest,
     RunDueRequest,
     ScheduledAnalysisCreate,
@@ -35,11 +38,13 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
     runner = DemoAnalysisRunner() if settings.runner_mode == "demo" else TradingAgentsGraphRunner()
     service = AnalysisService(repository, runner)
     scheduler_service = SchedulerService(service)
+    intervention_service = InterventionService(repository)
     app = FastAPI(title="TradingAgents Web", version="0.1.0")
     app.state.settings = settings
     app.state.repository = repository
     app.state.service = service
     app.state.scheduler_service = scheduler_service
+    app.state.intervention_service = intervention_service
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.cors_origins),
@@ -123,6 +128,74 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
         return task
 
 
+
+
+    @app.get("/api/interventions")
+    def list_interventions(user: dict = Depends(current_user)) -> dict:
+        return {"items": repository.list_interventions_for_user(user["id"])}
+
+    @app.post("/api/interventions", status_code=201)
+    def create_intervention(payload: InterventionCreate, user: dict = Depends(current_user)) -> dict:
+        session = repository.create_intervention_session(user["id"], payload.source_analysis_task_id, payload.target_agent_name)
+        if not session:
+            raise HTTPException(status_code=404, detail="analysis not found")
+        return session
+
+    @app.get("/api/interventions/{session_id}")
+    def get_intervention(session_id: int, user: dict = Depends(current_user)) -> dict:
+        session = repository.get_intervention_for_user(session_id, user["id"])
+        if not session:
+            raise HTTPException(status_code=404, detail="intervention not found")
+        return session
+
+    @app.post("/api/interventions/{session_id}/messages", status_code=201)
+    def append_intervention_message(session_id: int, payload: InterventionMessageCreate, user: dict = Depends(current_user)) -> dict:
+        if not repository.get_intervention_for_user(session_id, user["id"]):
+            raise HTTPException(status_code=404, detail="intervention not found")
+        message = repository.append_intervention_message(session_id, user["id"], payload.content)
+        if not message:
+            raise HTTPException(status_code=409, detail="intervention is not open")
+        return message
+
+    @app.post("/api/interventions/{session_id}/pause")
+    def pause_intervention(session_id: int, user: dict = Depends(current_user)) -> dict:
+        current = repository.get_intervention_for_user(session_id, user["id"])
+        if not current:
+            raise HTTPException(status_code=404, detail="intervention not found")
+        if current["status"] == "closed":
+            raise HTTPException(status_code=409, detail="intervention is closed")
+        session = repository.set_intervention_status(session_id, user["id"], "paused")
+        if not session:
+            raise HTTPException(status_code=404, detail="intervention not found")
+        return session
+
+    @app.post("/api/interventions/{session_id}/resume")
+    def resume_intervention(session_id: int, user: dict = Depends(current_user)) -> dict:
+        current = repository.get_intervention_for_user(session_id, user["id"])
+        if not current:
+            raise HTTPException(status_code=404, detail="intervention not found")
+        if current["status"] == "closed":
+            raise HTTPException(status_code=409, detail="intervention is closed")
+        session = repository.set_intervention_status(session_id, user["id"], "open")
+        if not session:
+            raise HTTPException(status_code=404, detail="intervention not found")
+        return session
+
+    @app.post("/api/interventions/{session_id}/close")
+    def close_intervention(session_id: int, user: dict = Depends(current_user)) -> dict:
+        session = repository.set_intervention_status(session_id, user["id"], "closed")
+        if not session:
+            raise HTTPException(status_code=404, detail="intervention not found")
+        return session
+
+    @app.post("/api/interventions/{session_id}/run", status_code=201)
+    def run_intervention(session_id: int, user: dict = Depends(current_user)) -> dict:
+        if not repository.get_intervention_for_user(session_id, user["id"]):
+            raise HTTPException(status_code=404, detail="intervention not found")
+        output = intervention_service.run_continuation(session_id, user["id"])
+        if not output:
+            raise HTTPException(status_code=409, detail="intervention is not open")
+        return output
 
     @app.get("/api/memories")
     def list_memories(
