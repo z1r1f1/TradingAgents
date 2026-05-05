@@ -295,3 +295,77 @@ The analysis detail/realtime area includes agent-level intervention controls. Us
 - Continuation output is deterministic and auditable in local/demo mode. Real model-backed continuation should add provider cost/rate controls before production use.
 - No file upload, voice/video, rich document annotation, compliance approval workflow, Redis/Celery/Postgres, or external workflow engine is included.
 - Production deployments should add audit export, retention/delete workflows, stronger admin provisioning, rate limits, and a dedicated security review before internet exposure.
+
+## Phase 5 production hardening
+
+Phase 5 adds pragmatic controls for deployments that are reachable outside a trusted development network while keeping SQLite, FastAPI, React, the demo runner, and CLI behavior intact. This is still not an enterprise compliance stack: use HTTPS, strict origin allowlists, explicit user provisioning, backups, and cost controls before enabling the real runner.
+
+### Production-mode configuration
+
+Enable production validation explicitly:
+
+```bash
+export TRADINGAGENTS_WEB_ENV=production
+export TRADINGAGENTS_WEB_AUTH_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+export TRADINGAGENTS_WEB_ALLOW_REGISTRATION=0
+export TRADINGAGENTS_WEB_CORS_ORIGINS=https://tradingagents.example.com
+```
+
+In production mode startup rejects open self-registration, the local default auth secret, weak/missing auth secrets, and wildcard CORS. Local development keeps the previous defaults. The frontend also removes demo login defaults when `VITE_TRADINGAGENTS_WEB_ENV=production` is set and shows a warning when the API appears to be local or the web env is not production.
+
+### User provisioning
+
+The supported bootstrap path is environment-driven first-user creation:
+
+```bash
+export TRADINGAGENTS_WEB_BOOTSTRAP_EMAIL=admin@example.com
+export TRADINGAGENTS_WEB_BOOTSTRAP_PASSWORD='replace-with-a-long-random-password'
+export TRADINGAGENTS_WEB_ALLOW_REGISTRATION=0
+```
+
+On startup the backend creates that user if it does not already exist and records `auth.user.provisioned` in `audit_logs`. Remove the bootstrap password from the environment after the account exists, then use the normal login route.
+
+### Rate limits
+
+Rate limiting is local in-process and intended as a basic abuse/cost guard, not a multi-process distributed limiter. Configure:
+
+- `TRADINGAGENTS_WEB_RATE_LIMIT_WINDOW_SECONDS` (default `60`)
+- `TRADINGAGENTS_WEB_AUTH_RATE_LIMIT` for login/register
+- `TRADINGAGENTS_WEB_ANALYSIS_RATE_LIMIT` for analysis create/rerun
+- `TRADINGAGENTS_WEB_MUTATION_RATE_LIMIT` for schedule, memory, delete/export-adjacent mutations, and intervention lifecycle actions
+- `TRADINGAGENTS_WEB_INTERVENTION_RATE_LIMIT` for intervention continuation runs
+
+Exceeded limits return HTTP `429` and emit `rate_limit.exceeded`.
+
+### Audit log
+
+The `audit_logs` table stores `user_id`, event type, resource type/id, metadata JSON, IP address, and timestamp. Security-relevant events include login success/failure, logout, registration/provisioning, analysis create/rerun/delete, schedule create/update/delete/pause/resume/trigger/run-due, memory update/archive/unarchive, intervention create/message/pause/resume/close/run/delete, account export, and rate-limit denials. Users can inspect their own audit events with `GET /api/account/audit`.
+
+### Export, delete, and retention behavior
+
+`GET /api/account/export` returns JSON format `tradingagents.web.export.v1` containing only the authenticated user's analyses, memories, schedules, and interventions. The frontend has an **Export account** button that downloads this JSON. Treat exports as sensitive because they can include prompts, model outputs, market summaries, and attached memories.
+
+Deletion is owner-scoped:
+
+- `DELETE /api/analyses/{task_id}` hard-deletes the user's task and cascades its events, report sections, final decision, attached memories, and linked interventions.
+- `DELETE /api/schedules/{schedule_id}` keeps the existing soft-delete behavior through `deleted_at`.
+- `POST /api/memories/{memory_id}/archive` remains the retention-safe memory workflow; archived memories are omitted from default listings and cannot be newly attached.
+- `DELETE /api/interventions/{session_id}` hard-deletes one owned intervention session and its messages/events/outputs.
+
+These routes return `404` for another user's data. There is no regulated retention/legal-hold workflow in Phase 5.
+
+### SQLite backup and migration safety
+
+SQLite initialization is idempotent and records Phase 5 schema creation in `schema_migrations`. Create a consistent backup with:
+
+```bash
+python3 -m tradingagents.web.maintenance backup \
+  --database ~/.tradingagents/web.sqlite3 \
+  --output ~/.tradingagents/backups/web-$(date +%Y%m%d-%H%M%S).sqlite3
+```
+
+Run backups before upgrades and store them encrypted/off-host for internet-facing deployments. Backups and exports may contain sensitive user data.
+
+### Reverse proxy and provider-cost guidance
+
+Terminate TLS at a reverse proxy such as Caddy, Nginx, Traefik, or a managed load balancer. Forward only the API path to Uvicorn, set exact CORS origins, use secure secret storage, and disable direct public access to the SQLite file and backup directory. Keep `TRADINGAGENTS_WEB_RUNNER=demo` until API keys, provider budgets, rate limits, monitoring, and manual review workflows are ready for real model/data-provider calls.

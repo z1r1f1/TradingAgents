@@ -87,6 +87,15 @@ export type ScheduleExecution = {
   error?: string | null;
 };
 
+export type AccountExport = {
+  format: string;
+  exported_at: string;
+  analyses: AnalysisTask[];
+  memories: AgentMemory[];
+  schedules: Schedule[];
+  interventions: InterventionSession[];
+};
+
 const API_BASE = import.meta.env.VITE_TRADINGAGENTS_API ?? 'http://localhost:8000';
 
 async function request<T>(path: string, token: string | null, init: RequestInit = {}): Promise<T> {
@@ -107,6 +116,8 @@ export const api = {
   listAnalyses: (token: string) => request<{ items: AnalysisTask[] }>('/api/analyses', token),
   getAnalysis: (token: string, id: number) => request<AnalysisTask>(`/api/analyses/${id}`, token),
   rerun: (token: string, id: number, overrides: Partial<AnalysisParams>) => request<AnalysisTask>(`/api/analyses/${id}/rerun`, token, { method: 'POST', body: JSON.stringify(overrides) }),
+  deleteAnalysis: (token: string, id: number) => request<void>(`/api/analyses/${id}`, token, { method: 'DELETE' }),
+  exportAccount: (token: string) => request<AccountExport>('/api/account/export', token),
   listSchedules: (token: string) => request<{ items: Schedule[] }>('/api/schedules', token),
   getSchedule: (token: string, id: number) => request<Schedule>(`/api/schedules/${id}`, token),
   createSchedule: (token: string, payload: SchedulePayload) => request<Schedule>('/api/schedules', token, { method: 'POST', body: JSON.stringify(payload) }),
@@ -127,6 +138,7 @@ export const api = {
   resumeIntervention: (token: string, id: number) => request<InterventionSession>(`/api/interventions/${id}/resume`, token, { method: 'POST' }),
   closeIntervention: (token: string, id: number) => request<InterventionSession>(`/api/interventions/${id}/close`, token, { method: 'POST' }),
   runIntervention: (token: string, id: number) => request<InterventionOutput>(`/api/interventions/${id}/run`, token, { method: 'POST' }),
+  deleteIntervention: (token: string, id: number) => request<void>(`/api/interventions/${id}`, token, { method: 'DELETE' }),
   streamUrl: (id: number) => `${API_BASE}/api/analyses/${id}/events`
 };
 

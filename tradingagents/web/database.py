@@ -32,6 +32,20 @@ class WebRepository:
                     password_hash text not null,
                     created_at text not null
                 );
+                create table if not exists schema_migrations (
+                    version text primary key,
+                    applied_at text not null
+                );
+                create table if not exists audit_logs (
+                    id integer primary key autoincrement,
+                    user_id integer references users(id) on delete set null,
+                    event_type text not null,
+                    resource_type text,
+                    resource_id text,
+                    metadata_json text not null,
+                    ip_address text,
+                    created_at text not null
+                );
                 create table if not exists sessions (
                     id integer primary key autoincrement,
                     user_id integer not null references users(id) on delete cascade,
@@ -195,6 +209,10 @@ class WebRepository:
                 );
                 """
             )
+            conn.execute(
+                "insert or ignore into schema_migrations(version, applied_at) values (?, ?)",
+                ("phase5-production-hardening", utcnow()),
+            )
 
     def create_user(self, email: str, password: str) -> dict[str, Any]:
         now = utcnow()
@@ -246,6 +264,44 @@ class WebRepository:
     def delete_session(self, token: str) -> None:
         with self.connect() as conn:
             conn.execute("delete from sessions where token_hash = ?", (token_hash(token),))
+
+    def append_audit_log(
+        self,
+        event_type: str,
+        *,
+        user_id: int | None = None,
+        resource_type: str | None = None,
+        resource_id: int | str | None = None,
+        metadata: dict[str, Any] | None = None,
+        ip_address: str | None = None,
+    ) -> dict[str, Any]:
+        created_at = utcnow()
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                insert into audit_logs(user_id, event_type, resource_type, resource_id, metadata_json, ip_address, created_at)
+                values (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    event_type,
+                    resource_type,
+                    str(resource_id) if resource_id is not None else None,
+                    json.dumps(metadata or {}),
+                    ip_address,
+                    created_at,
+                ),
+            )
+            row = conn.execute("select * from audit_logs where id = ?", (cur.lastrowid,)).fetchone()
+        return self._audit_log_dict(row)
+
+    def list_audit_logs_for_user(self, user_id: int) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "select * from audit_logs where user_id = ? order by created_at desc, id desc",
+                (user_id,),
+            ).fetchall()
+        return [self._audit_log_dict(row) for row in rows]
 
     def create_task(self, user_id: int, params: AnalysisCreate | dict[str, Any]) -> dict[str, Any]:
         if isinstance(params, dict):
@@ -360,6 +416,19 @@ class WebRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def export_user_data(self, user_id: int) -> dict[str, Any]:
+        analyses = [self.get_task_for_user(task["id"], user_id) for task in self.list_tasks_for_user(user_id)]
+        interventions = [self.get_intervention_for_user(session["id"], user_id) for session in self.list_interventions_for_user(user_id)]
+        schedules = [self.get_schedule_for_user(schedule["id"], user_id) for schedule in self.list_schedules_for_user(user_id)]
+        return {
+            "format": "tradingagents.web.export.v1",
+            "exported_at": utcnow(),
+            "analyses": [item for item in analyses if item],
+            "memories": self.list_memories_for_user(user_id, archived=None),
+            "schedules": [item for item in schedules if item],
+            "interventions": [item for item in interventions if item],
+        }
+
     def get_task_for_user(self, task_id: int, user_id: int, *, include_detail: bool = True) -> dict[str, Any] | None:
         with self.connect() as conn:
             task = conn.execute("select * from analysis_tasks where id = ? and user_id = ?", (task_id, user_id)).fetchone()
@@ -380,6 +449,11 @@ class WebRepository:
                 result["attached_memories"] = self.list_attached_memories(conn, task_id)
                 result["intervention_sessions"] = self.list_interventions_for_task(conn, task_id)
             return result
+
+    def delete_task_for_user(self, task_id: int, user_id: int) -> bool:
+        with self.connect() as conn:
+            cur = conn.execute("delete from analysis_tasks where id = ? and user_id = ?", (task_id, user_id))
+            return cur.rowcount > 0
 
 
     def create_schedule(self, user_id: int, payload: ScheduledAnalysisCreate) -> dict[str, Any]:
@@ -789,6 +863,11 @@ class WebRepository:
             session["outputs"] = [self._intervention_output_dict(item) for item in outputs]
             return session
 
+    def delete_intervention_for_user(self, session_id: int, user_id: int) -> bool:
+        with self.connect() as conn:
+            cur = conn.execute("delete from intervention_sessions where id = ? and user_id = ?", (session_id, user_id))
+            return cur.rowcount > 0
+
     def append_intervention_message(self, session_id: int, user_id: int, content: str) -> dict[str, Any] | None:
         session = self.get_intervention_for_user(session_id, user_id)
         if not session or session["status"] != "open":
@@ -846,6 +925,11 @@ class WebRepository:
     def _intervention_output_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)
         data["context"] = json.loads(data.pop("context_json"))
+        return data
+
+    def _audit_log_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        data = dict(row)
+        data["metadata"] = json.loads(data.pop("metadata_json"))
         return data
 
     def _event_dict(self, row: sqlite3.Row) -> dict[str, Any]:

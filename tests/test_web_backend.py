@@ -3,9 +3,12 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tradingagents.web.main import create_app
+from tradingagents.web.maintenance import backup_sqlite_database
+from tradingagents.web.database import WebRepository
 from tradingagents.web.settings import WebSettings
 
 
@@ -657,3 +660,186 @@ def test_intervention_continuation_uses_attached_memories_without_cross_user_lea
     assert "Attached memories: 1" in output["content"]
     assert "Use attached memory only" in output["content"]
     assert first["id"] != second["id"]
+
+
+def test_production_settings_reject_unsafe_defaults_and_bootstrap_user(tmp_path: Path):
+    with pytest.raises(ValueError, match="self-registration"):
+        create_app(
+            settings=WebSettings(
+                database_path=tmp_path / "open.sqlite3",
+                web_env="production",
+                auth_secret="strong-production-secret",
+                allow_registration=True,
+                cors_origins=("https://app.example.com",),
+            )
+        )
+    with pytest.raises(ValueError, match="auth secret"):
+        create_app(
+            settings=WebSettings(
+                database_path=tmp_path / "secret.sqlite3",
+                web_env="production",
+                auth_secret="change-me-local-dev-secret",
+                allow_registration=False,
+                cors_origins=("https://app.example.com",),
+            )
+        )
+    with pytest.raises(ValueError, match="CORS"):
+        create_app(
+            settings=WebSettings(
+                database_path=tmp_path / "cors.sqlite3",
+                web_env="production",
+                auth_secret="strong-production-secret",
+                allow_registration=False,
+                cors_origins=("*",),
+            )
+        )
+
+    settings = WebSettings(
+        database_path=tmp_path / "safe.sqlite3",
+        web_env="production",
+        auth_secret="strong-production-secret",
+        allow_registration=False,
+        cors_origins=("https://app.example.com",),
+        bootstrap_user_email="admin@example.com",
+        bootstrap_user_password="correct horse battery staple",
+    )
+    client = TestClient(create_app(settings=settings, run_tasks_inline=True))
+    assert client.post("/api/auth/register", json={"email": "new@example.com", "password": "correct horse battery staple"}).status_code == 403
+    login_response = client.post(
+        "/api/auth/login",
+        json={"email": "admin@example.com", "password": "correct horse battery staple"},
+    )
+    assert login_response.status_code == 200
+
+
+def test_rate_limits_and_security_audit_logs_cover_high_risk_actions(tmp_path: Path):
+    db_path = tmp_path / "web.sqlite3"
+    settings = WebSettings(
+        database_path=db_path,
+        auth_secret="test-secret",
+        runner_mode="demo",
+        allow_registration=True,
+        rate_limit_window_seconds=60,
+        auth_rate_limit=20,
+        mutation_rate_limit=20,
+        analysis_rate_limit=1,
+        intervention_rate_limit=1,
+    )
+    client = TestClient(create_app(settings=settings, run_tasks_inline=True))
+    headers = login(client)
+
+    payload = {
+        "ticker": "SPY",
+        "analysis_date": "2026-05-01",
+        "analysts": ["market"],
+        "research_depth": 1,
+        "llm_provider": "openai",
+        "quick_model": "gpt-5.4-mini",
+        "deep_model": "gpt-5.5",
+        "output_language": "English",
+    }
+    first = client.post("/api/analyses", headers=headers, json=payload)
+    assert first.status_code == 201
+    limited = client.post("/api/analyses", headers=headers, json={**payload, "ticker": "AAPL"})
+    assert limited.status_code == 429
+
+    intervention = client.post(
+        "/api/interventions",
+        headers=headers,
+        json={"source_analysis_task_id": first.json()["id"], "target_agent_name": "Market Analyst"},
+    ).json()
+    schedule = client.post(
+        "/api/schedules",
+        headers=headers,
+        json={
+            "name": "Audited trigger",
+            "ticker": "SPY",
+            "start_at": "2026-05-01T09:30:00+00:00",
+            "interval": "daily",
+            "analysts": ["market"],
+            "research_depth": 1,
+            "llm_provider": "openai",
+            "quick_model": "gpt-5.4-mini",
+            "deep_model": "gpt-5.5",
+            "output_language": "English",
+        },
+    ).json()
+    assert client.post(f"/api/schedules/{schedule['id']}/trigger", headers=headers).status_code == 201
+    assert client.post(f"/api/interventions/{intervention['id']}/run", headers=headers).status_code == 201
+    assert client.post(f"/api/interventions/{intervention['id']}/run", headers=headers).status_code == 429
+
+    with sqlite3.connect(db_path) as conn:
+        events = {row[0] for row in conn.execute("select event_type from audit_logs").fetchall()}
+    assert {
+        "auth.login.success",
+        "analysis.create",
+        "schedule.create",
+        "schedule.trigger",
+        "intervention.create",
+        "intervention.run",
+        "rate_limit.exceeded",
+    } <= events
+
+
+def test_export_delete_retention_are_owner_scoped(tmp_path: Path):
+    client, db_path = make_client(tmp_path)
+    headers = login(client)
+    other_register = client.post(
+        "/api/auth/register",
+        json={"email": "phase5-other@example.com", "password": "correct horse battery staple"},
+    )
+    assert other_register.status_code == 201
+    other_login = client.post(
+        "/api/auth/login",
+        json={"email": "phase5-other@example.com", "password": "correct horse battery staple"},
+    )
+    other_headers = {"Authorization": f"Bearer {other_login.json()['access_token']}"}
+
+    payload = {
+        "ticker": "SPY",
+        "analysis_date": "2026-05-01",
+        "analysts": ["market"],
+        "research_depth": 1,
+        "llm_provider": "openai",
+        "quick_model": "gpt-5.4-mini",
+        "deep_model": "gpt-5.5",
+        "output_language": "English",
+    }
+    mine = client.post("/api/analyses", headers=headers, json=payload).json()
+    theirs = client.post("/api/analyses", headers=other_headers, json={**payload, "ticker": "AAPL"}).json()
+    memory_id = client.get("/api/memories", headers=headers, params={"agent": "Market Analyst"}).json()["items"][0]["id"]
+    intervention = client.post(
+        "/api/interventions",
+        headers=headers,
+        json={"source_analysis_task_id": mine["id"], "target_agent_name": "Market Analyst"},
+    ).json()
+
+    exported = client.get("/api/account/export", headers=headers)
+    assert exported.status_code == 200
+    data = exported.json()
+    assert [item["id"] for item in data["analyses"]] == [mine["id"]]
+    assert all(item["user_id"] != 2 for item in data["memories"])
+    assert [item["id"] for item in data["interventions"]] == [intervention["id"]]
+
+    assert client.post(f"/api/memories/{memory_id}/archive", headers=headers).status_code == 200
+    assert client.delete(f"/api/analyses/{theirs['id']}", headers=headers).status_code == 404
+    assert client.delete(f"/api/analyses/{mine['id']}", headers=headers).status_code == 204
+    assert client.get(f"/api/analyses/{theirs['id']}", headers=other_headers).status_code == 200
+
+    with sqlite3.connect(db_path) as conn:
+        events = {row[0] for row in conn.execute("select event_type from audit_logs").fetchall()}
+    assert {"account.export", "analysis.delete", "memory.archive"} <= events
+
+
+def test_sqlite_backup_helper_and_idempotent_initialization(tmp_path: Path):
+    db_path = tmp_path / "web.sqlite3"
+    repo = WebRepository(db_path)
+    repo.create_user("backup@example.com", "correct horse battery staple")
+    WebRepository(db_path)
+    backup_path = backup_sqlite_database(db_path, tmp_path / "backup.sqlite3")
+
+    assert backup_path.exists()
+    with sqlite3.connect(backup_path) as conn:
+        assert conn.execute("select count(*) from users").fetchone()[0] == 1
+        tables = {row[0] for row in conn.execute("select name from sqlite_master where type='table'").fetchall()}
+    assert {"users", "audit_logs", "schema_migrations"} <= tables

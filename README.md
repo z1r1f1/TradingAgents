@@ -273,4 +273,4 @@ Please reference our work if you find *TradingAgents* provides you with some hel
 
 ## Web UI (Phase 1)
 
-An authenticated FastAPI + SQLite backend and React/Vite frontend are documented in [`docs/web-ui.md`](docs/web-ui.md).
+An authenticated FastAPI + SQLite backend and React/Vite frontend are documented in [`docs/web-ui.md`](docs/web-ui.md). For internet-facing deployments, read the Phase 5 production-hardening section before exposing the API: enable `TRADINGAGENTS_WEB_ENV=production`, disable open registration after provisioning a user, set exact CORS origins, use HTTPS/reverse proxy termination, configure rate limits, and run SQLite backups.

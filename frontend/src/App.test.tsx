@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildEditableParamsFromTask, parseAnalystsInput } from './App';
+import {
+  accountExportFilename,
+  buildEditableParamsFromTask,
+  parseAnalystsInput,
+  shouldShowProductionSafetyWarning
+} from './App';
 import type { AnalysisTask } from './api';
 
 describe('TradingAgents web frontend', () => {
@@ -128,5 +133,17 @@ describe('human intervention frontend helpers', () => {
     };
 
     expect(buildInterventionLabel(session)).toBe('#5 · Task 9 · Market Analyst · open');
+  });
+});
+
+describe('production hardening frontend helpers', () => {
+  it('surfaces warnings for non-production or localhost API settings', () => {
+    expect(shouldShowProductionSafetyWarning('development', 'http://localhost:8000')).toBe(true);
+    expect(shouldShowProductionSafetyWarning('production', 'http://127.0.0.1:8000')).toBe(true);
+    expect(shouldShowProductionSafetyWarning('production', 'https://tradingagents.example.com')).toBe(false);
+  });
+
+  it('builds deterministic export filenames from export timestamps', () => {
+    expect(accountExportFilename('2026-05-05T11:00:00+00:00')).toBe('tradingagents-export-2026-05-05.json');
   });
 });
