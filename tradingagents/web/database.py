@@ -11,6 +11,8 @@ from .schemas import AnalysisCreate, EventPayload, MemoryUpdate, ScheduledAnalys
 
 
 class WebRepository:
+    storage_backend = "sqlite"
+
     def __init__(self, database_path: Path):
         self.database_path = Path(database_path).expanduser()
         self.database_path.parent.mkdir(parents=True, exist_ok=True)

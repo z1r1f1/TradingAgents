@@ -9,8 +9,10 @@ from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlite3 import IntegrityError
 
+from .coordination import InMemoryCoordinator, RedisCoordinator
 from .database import WebRepository
 from .intervention import InterventionService
+from .postgres import PostgresWebRepository
 from .runner import DemoAnalysisRunner, TradingAgentsGraphRunner
 from .schemas import (
     AnalysisCreate,
@@ -35,10 +37,17 @@ from .settings import WebSettings
 security = HTTPBearer(auto_error=False)
 
 
-def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = False) -> FastAPI:
+def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = False, coordinator=None) -> FastAPI:
     settings = settings or WebSettings()
     settings.validate_for_startup()
-    repository = WebRepository(settings.database_path)
+    repository = PostgresWebRepository(settings.postgres_dsn) if settings.runtime_mode == "production-cluster" and settings.postgres_dsn else WebRepository(settings.database_path)
+    if coordinator is None:
+        coordinator = (
+            RedisCoordinator(settings.redis_url, namespace=settings.coordination_namespace)
+            if settings.runtime_mode == "production-cluster" and settings.redis_url
+            else InMemoryCoordinator(namespace=settings.coordination_namespace)
+        )
+    coordinator.check_health()
     if settings.bootstrap_user_email and settings.bootstrap_user_password and not repository.get_user_by_email(settings.bootstrap_user_email):
         user = repository.create_user(settings.bootstrap_user_email, settings.bootstrap_user_password)
         repository.append_audit_log("auth.user.provisioned", user_id=user["id"], resource_type="user", resource_id=user["id"])
@@ -52,6 +61,7 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
     app.state.service = service
     app.state.scheduler_service = scheduler_service
     app.state.intervention_service = intervention_service
+    app.state.coordinator = coordinator
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.cors_origins),
@@ -59,8 +69,6 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    rate_state: dict[tuple[str, str], list[float]] = {}
-
     @app.middleware("http")
     async def add_security_headers(request: Request, call_next):
         response = await call_next(request)
@@ -134,6 +142,22 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
                 request=request,
             )
             raise HTTPException(status_code=402, detail="workspace real-runner budget exceeded")
+        decision = coordinator.try_consume_budget(
+            user_id=user["id"],
+            workspace_id=workspace_id,
+            user_limit=settings.real_runner_user_analysis_limit,
+            workspace_limit=settings.real_runner_workspace_analysis_limit,
+        )
+        if not decision.allowed:
+            audit(
+                "cost.blocked",
+                user_id=user["id"],
+                workspace_id=workspace_id,
+                resource_type="analysis",
+                metadata={"reason": decision.reason, "coordinator": coordinator.backend_name},
+                request=request,
+            )
+            raise HTTPException(status_code=402, detail=decision.reason or "real-runner budget exceeded")
 
     def rate_identity(request: Request, user: dict | None = None) -> str:
         if user:
@@ -143,15 +167,42 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
     def enforce_rate_limit(scope: str, request: Request, limit: int, user: dict | None = None) -> None:
         if limit <= 0:
             return
-        now = time.monotonic()
-        key = (scope, rate_identity(request, user))
-        window_start = now - settings.rate_limit_window_seconds
-        hits = [hit for hit in rate_state.get(key, []) if hit > window_start]
-        if len(hits) >= limit:
+        decision = coordinator.check_rate_limit(
+            scope,
+            rate_identity(request, user),
+            limit=limit,
+            window_seconds=settings.rate_limit_window_seconds,
+        )
+        if not decision.allowed:
             audit("rate_limit.exceeded", user_id=user["id"] if user else None, resource_type=scope, request=request)
-            raise HTTPException(status_code=429, detail="rate limit exceeded")
-        hits.append(now)
-        rate_state[key] = hits
+            raise HTTPException(status_code=429, detail=decision.reason or "rate limit exceeded")
+
+    def idempotency_cache_key(request: Request, user: dict, scope: str) -> str | None:
+        key = request.headers.get("Idempotency-Key")
+        if not key:
+            return None
+        return f"{scope}:user:{user['id']}:{key}"
+
+    def get_idempotent_response(request: Request, user: dict, scope: str) -> tuple[str | None, dict | None]:
+        key = idempotency_cache_key(request, user, scope)
+        if not key:
+            return None, None
+        response = coordinator.get_idempotent_response(key)
+        if response is not None:
+            audit(
+                "idempotency.replay",
+                user_id=user["id"],
+                workspace_id=response.get("workspace_id"),
+                resource_type=scope,
+                resource_id=response.get("id"),
+                metadata={"key": key},
+                request=request,
+            )
+        return key, response
+
+    def store_idempotent_response(key: str | None, response: dict) -> None:
+        if key:
+            coordinator.store_idempotent_response(key, response, ttl_seconds=24 * 60 * 60)
 
     def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(security)) -> dict:
         if credentials is None or credentials.scheme.lower() != "bearer":
@@ -168,8 +219,17 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
 
     @app.get("/health")
     @app.get("/api/health")
-    def health() -> dict[str, str]:
-        return {"status": "ok", "bind_host": settings.host}
+    def health() -> dict:
+        return {
+            "status": "ok",
+            "bind_host": settings.host,
+            "runtime_mode": settings.runtime_mode,
+            "storage_backend": getattr(repository, "storage_backend", "sqlite"),
+            "coordination_backend": coordinator.backend_name,
+            "postgres_configured": bool(settings.postgres_dsn),
+            "redis_configured": bool(settings.redis_url),
+            "coordination": coordinator.check_health(),
+        }
 
     @app.post("/api/auth/register", status_code=201)
     def register(payload: UserCreate, request: Request) -> dict:
@@ -276,6 +336,9 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
         user: dict = Depends(current_user),
     ) -> dict:
         enforce_rate_limit("analysis", request, settings.analysis_rate_limit, user)
+        idem_key, cached = get_idempotent_response(request, user, "analysis.create")
+        if cached is not None:
+            return cached
         workspace_id, _ = require_workspace_role(user, payload.workspace_id, {"owner", "admin", "member"})
         payload = payload.model_copy(update={"workspace_id": workspace_id})
         enforce_real_runner_budget(user, workspace_id, request)
@@ -283,6 +346,7 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
         audit("analysis.create", user_id=user["id"], workspace_id=workspace_id, resource_type="analysis", resource_id=task["id"], request=request)
         if not run_tasks_inline:
             background_tasks.add_task(service.run_task, task["id"], payload)
+        store_idempotent_response(idem_key, task)
         return task
 
     @app.get("/api/analyses")
@@ -310,6 +374,9 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
         user: dict = Depends(current_user),
     ) -> dict:
         enforce_rate_limit("analysis", request, settings.analysis_rate_limit, user)
+        idem_key, cached = get_idempotent_response(request, user, f"analysis.rerun:{task_id}")
+        if cached is not None:
+            return cached
         source = repository.get_task_for_user(task_id, user["id"], include_detail=False)
         if not source:
             raise HTTPException(status_code=404, detail="analysis not found")
@@ -330,6 +397,7 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
         )
         if not run_tasks_inline:
             background_tasks.add_task(service.run_task, task["id"], AnalysisCreate(**task["parameters"]))
+        store_idempotent_response(idem_key, task)
         return task
 
     @app.delete("/api/analyses/{task_id}", status_code=204)
@@ -481,6 +549,9 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
     @app.post("/api/interventions/{session_id}/run", status_code=201)
     def run_intervention(session_id: int, request: Request, user: dict = Depends(current_user)) -> dict:
         enforce_rate_limit("intervention", request, settings.intervention_rate_limit, user)
+        idem_key, cached = get_idempotent_response(request, user, f"intervention.run:{session_id}")
+        if cached is not None:
+            return cached
         current = repository.get_intervention_for_user(session_id, user["id"])
         if not current:
             raise HTTPException(status_code=404, detail="intervention not found")
@@ -490,6 +561,7 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
         if not output:
             raise HTTPException(status_code=409, detail="intervention is not open")
         audit("intervention.run", user_id=user["id"], workspace_id=current.get("workspace_id"), resource_type="intervention", resource_id=session_id, request=request)
+        store_idempotent_response(idem_key, output)
         return output
 
     @app.delete("/api/interventions/{session_id}", status_code=204)
@@ -653,14 +725,31 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
     @app.post("/api/schedules/{schedule_id}/trigger", status_code=201)
     def trigger_schedule(schedule_id: int, request: Request, user: dict = Depends(current_user)) -> dict:
         enforce_rate_limit("mutation", request, settings.mutation_rate_limit, user)
+        idem_key, cached = get_idempotent_response(request, user, f"schedule.trigger:{schedule_id}")
+        if cached is not None:
+            return cached
         current = repository.get_schedule_for_user(schedule_id, user["id"])
         if not current:
             raise HTTPException(status_code=404, detail="schedule not found")
         require_workspace_role(user, current.get("workspace_id"), {"owner", "admin", "member"})
         enforce_real_runner_budget(user, int(current.get("workspace_id") or repository.get_personal_workspace_id(user["id"])), request)
-        execution = scheduler_service.execute_schedule(user["id"], schedule_id, run_inline=run_tasks_inline, triggered_by="manual")
-        if not execution:
-            raise HTTPException(status_code=404, detail="schedule not found")
+        lock = coordinator.acquire_lock(f"schedule:trigger:{schedule_id}", ttl_seconds=300)
+        if lock is None:
+            audit(
+                "schedule.duplicate_suppressed",
+                user_id=user["id"],
+                workspace_id=current.get("workspace_id"),
+                resource_type="schedule",
+                resource_id=schedule_id,
+                request=request,
+            )
+            raise HTTPException(status_code=409, detail="schedule execution already in progress")
+        try:
+            execution = scheduler_service.execute_schedule(user["id"], schedule_id, run_inline=run_tasks_inline, triggered_by="manual")
+            if not execution:
+                raise HTTPException(status_code=404, detail="schedule not found")
+        finally:
+            lock.release()
         audit(
             "schedule.trigger",
             user_id=user["id"],
@@ -670,6 +759,7 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
             metadata={"execution_id": execution["id"], "analysis_task_id": execution.get("analysis_task_id")},
             request=request,
         )
+        store_idempotent_response(idem_key, execution)
         return execution
 
     @app.post("/api/scheduler/run-due")
@@ -687,6 +777,15 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
                 user,
                 int(schedule.get("workspace_id") or repository.get_personal_workspace_id(user["id"])),
                 request,
+            ),
+            lock_schedule=lambda schedule: coordinator.acquire_lock(f"schedule:due:{schedule['id']}", ttl_seconds=300),
+            on_duplicate=lambda schedule: audit(
+                "schedule.duplicate_suppressed",
+                user_id=user["id"],
+                workspace_id=schedule.get("workspace_id"),
+                resource_type="schedule",
+                resource_id=schedule["id"],
+                request=request,
             ),
         )
         audit(

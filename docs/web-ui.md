@@ -20,6 +20,10 @@ Important environment variables:
 - `TRADINGAGENTS_WEB_CORS_ORIGINS`: comma-separated frontend origins.
 - `TRADINGAGENTS_WEB_REAL_RUNNER_USER_ANALYSIS_LIMIT`: optional local cap for real-runner analysis/continuation creation per user; `-1` disables it.
 - `TRADINGAGENTS_WEB_REAL_RUNNER_WORKSPACE_ANALYSIS_LIMIT`: optional local cap for real-runner analysis/continuation creation per workspace; `-1` disables it.
+- `TRADINGAGENTS_WEB_RUNTIME_MODE`: `local` (default SQLite/in-process), `production-single` (SQLite with documented single-process limits), or `production-cluster` (Postgres + Redis).
+- `TRADINGAGENTS_WEB_POSTGRES_DSN`: required in `production-cluster`; for example `postgresql://user:pass@postgres:5432/tradingagents`.
+- `TRADINGAGENTS_WEB_REDIS_URL`: required in `production-cluster`; for example `redis://redis:6379/0`.
+- `TRADINGAGENTS_WEB_COORDINATION_NAMESPACE`: Redis key prefix for rate limits, budgets, locks, and idempotency keys.
 
 ## Frontend setup and run
 
@@ -435,6 +439,69 @@ Set either cap to `-1` to disable it. When enabled, the API checks the cap befor
 
 `python3 -m tradingagents.web.maintenance backup` now fails clearly if the source SQLite file is missing and verifies the copied database with `pragma integrity_check`. A non-`ok` result raises an error instead of silently accepting a corrupt backup.
 
-### Phase 6 production limits and Phase 7 follow-up
+### Phase 6 production limits and follow-up
 
-Phase 6 remains a single-process SQLite deployment. It does not add SSO/OAuth/SAML, SCIM, billing APIs, Postgres, Redis, Celery, distributed locks, legal hold, or compliance certification. Recommended Phase 7 follow-up: organization invitations with email verification, stronger admin provisioning UX, multi-process-safe rate/budget counters, retention/legal-hold design, provider billing reconciliation, and a dedicated security review before broad enterprise rollout.
+Phase 6 remains a single-process SQLite deployment. It does not add SSO/OAuth/SAML, SCIM, billing APIs, Celery, legal hold, or compliance certification. Recommended follow-up: organization invitations with email verification, stronger admin provisioning UX, retention/legal-hold design, provider billing reconciliation, and a dedicated security review before broad enterprise rollout.
+
+## Phase 7 production-cluster runtime
+
+Phase 7 adds an explicit runtime mode matrix and shared coordination layer so the web API can run safely in multi-process or multi-instance deployments.
+
+### Runtime mode matrix
+
+| Mode | Storage | Coordination | Intended use | Startup requirements |
+| --- | --- | --- | --- | --- |
+| `local` | SQLite | in-process memory | development, demos, deterministic tests | no Postgres/Redis |
+| `production-single` | SQLite | in-process memory | one web process with Phase 5 hardening | production auth/CORS/registration checks |
+| `production-cluster` | Postgres | Redis | multiple API processes/instances | `TRADINGAGENTS_WEB_POSTGRES_DSN` and `TRADINGAGENTS_WEB_REDIS_URL` must be configured and reachable |
+
+Cluster startup initializes the Postgres schema idempotently and pings Redis before serving. Missing or unreachable dependencies fail fast with clear startup errors. Health responses expose `runtime_mode`, `storage_backend`, `coordination_backend`, and dependency configured/available booleans without echoing DSNs, Redis credentials, auth secrets, or bearer tokens.
+
+### Postgres persistence
+
+`production-cluster` uses the Postgres schema manager and repository adapter for all Phase 1-6 web tables:
+
+- auth/session: `users`, `sessions`;
+- workspace/RBAC/audit: `workspaces`, `workspace_members`, `audit_logs`, `schema_migrations`;
+- analysis/history/realtime: `analysis_tasks`, `task_parameters`, `agent_event_logs`, `report_sections`, `final_decisions`;
+- scheduling: `schedules`, `schedule_executions`;
+- memories: `agent_memories`, `analysis_memory_attachments`, `schedule_memory_attachments`;
+- interventions: `intervention_sessions`, `intervention_messages`, `intervention_events`, `intervention_outputs`.
+
+The SQLite repository remains the default and keeps its idempotent migration/backfill path for local data. Do not point `production-cluster` at a SQLite database; migrate data deliberately through export/import or a dedicated migration plan.
+
+### Redis coordination
+
+Redis keys are prefixed by `TRADINGAGENTS_WEB_COORDINATION_NAMESPACE` (default `tradingagents:web`). The coordinator uses:
+
+- `rate:<scope>:<identity>:<bucket>` with a window TTL for shared fixed-window rate limits;
+- `budget:user:<id>` and `budget:workspace:<id>` for shared real-runner budget counters;
+- `lock:schedule:due:<id>` and `lock:schedule:trigger:<id>` for schedule execution suppression;
+- `idempotency:<scope>:user:<id>:<client-key>` with a 24-hour TTL for replaying safe retried responses.
+
+Rate-limit blocks emit `rate_limit.exceeded`. Budget blocks emit `cost.blocked`. Duplicate idempotent request replays emit `idempotency.replay`. Suppressed duplicate schedule execution emits `schedule.duplicate_suppressed`.
+
+### Cluster-safe request behavior
+
+- Manual analysis and history rerun honor `Idempotency-Key`; duplicate retries return the first created task instead of creating another task.
+- Manual schedule trigger uses an idempotency key when supplied and a short Redis lock to avoid concurrent trigger execution.
+- Due schedule execution acquires a Redis lock per due schedule; concurrent workers skip locked schedules and audit suppression.
+- Intervention continuation honors `Idempotency-Key` so retried continuation calls do not duplicate outputs.
+- Real-runner budget checks use the existing DB counts plus Redis shared counters, so local mode remains compatible and cluster mode gets atomic cross-instance enforcement for new requests.
+
+### Local development services
+
+The compose file includes optional Postgres and Redis services under the `cluster` profile:
+
+```bash
+docker compose --profile cluster up postgres redis
+export TRADINGAGENTS_WEB_RUNTIME_MODE=production-cluster
+export TRADINGAGENTS_WEB_POSTGRES_DSN=postgresql://tradingagents:tradingagents@localhost:5432/tradingagents
+export TRADINGAGENTS_WEB_REDIS_URL=redis://localhost:6379/0
+```
+
+Integration tests use `TRADINGAGENTS_TEST_POSTGRES_DSN` and `TRADINGAGENTS_TEST_REDIS_URL`. If those variables are absent, cluster integration tests skip explicitly while unit tests still cover the coordination semantics.
+
+### Backup and migration operations
+
+SQLite local backups still use `python3 -m tradingagents.web.maintenance backup`. Production-cluster backups should use managed Postgres snapshots or `pg_dump`/WAL archival appropriate to the deployment. Redis coordination state is short-lived or reconstructable except budget counters; reset budget counters deliberately during operational windows and document the reset in audit/ops logs.

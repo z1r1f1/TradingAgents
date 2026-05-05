@@ -7,7 +7,11 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class WebSettings:
+    runtime_mode: str = os.getenv("TRADINGAGENTS_WEB_RUNTIME_MODE", "local")
     database_path: Path = Path(os.getenv("TRADINGAGENTS_WEB_DB", "~/.tradingagents/web.sqlite3")).expanduser()
+    postgres_dsn: str | None = os.getenv("TRADINGAGENTS_WEB_POSTGRES_DSN") or None
+    redis_url: str | None = os.getenv("TRADINGAGENTS_WEB_REDIS_URL") or None
+    coordination_namespace: str = os.getenv("TRADINGAGENTS_WEB_COORDINATION_NAMESPACE", "tradingagents:web")
     web_env: str = os.getenv("TRADINGAGENTS_WEB_ENV", "development")
     auth_secret: str = os.getenv("TRADINGAGENTS_WEB_AUTH_SECRET", "change-me-local-dev-secret")
     host: str = os.getenv("TRADINGAGENTS_WEB_HOST", "0.0.0.0")
@@ -34,6 +38,14 @@ class WebSettings:
         return self.web_env.lower() == "production"
 
     def validate_for_startup(self) -> None:
+        normalized_runtime = self.runtime_mode.lower()
+        if normalized_runtime not in {"local", "production-single", "production-cluster"}:
+            raise ValueError("runtime mode must be local, production-single, or production-cluster")
+        if normalized_runtime == "production-cluster":
+            if not self.postgres_dsn:
+                raise ValueError("production-cluster runtime requires Postgres configuration")
+            if not self.redis_url:
+                raise ValueError("production-cluster runtime requires Redis configuration")
         if not self.is_production:
             return
         if self.allow_registration:

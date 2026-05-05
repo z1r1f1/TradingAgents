@@ -73,14 +73,25 @@ class SchedulerService:
         run_inline: bool,
         workspace_id: int | None = None,
         before_execute: Callable[[dict[str, Any]], None] | None = None,
+        lock_schedule: Callable[[dict[str, Any]], Any | None] | None = None,
+        on_duplicate: Callable[[dict[str, Any]], None] | None = None,
     ) -> list[dict[str, Any]]:
         now_value = format_iso_datetime(parse_iso_datetime(now)) if now else format_iso_datetime(datetime.now(timezone.utc))
         executions = []
         for schedule in self.repository.list_due_schedules_for_user(user_id, now_value, workspace_id=workspace_id):
-            if before_execute:
-                before_execute(schedule)
-            execution = self._execute_schedule_row(user_id, schedule, run_inline=run_inline, triggered_by="due", now=now_value)
-            executions.append(execution)
+            lock = lock_schedule(schedule) if lock_schedule else None
+            if lock_schedule and lock is None:
+                if on_duplicate:
+                    on_duplicate(schedule)
+                continue
+            try:
+                if before_execute:
+                    before_execute(schedule)
+                execution = self._execute_schedule_row(user_id, schedule, run_inline=run_inline, triggered_by="due", now=now_value)
+                executions.append(execution)
+            finally:
+                if lock is not None:
+                    lock.release()
         return executions
 
     def _execute_schedule_row(

@@ -114,6 +114,15 @@ export type Workspace = {
   members?: WorkspaceMember[];
 };
 
+export type RuntimeHealth = {
+  status: string;
+  runtime_mode?: string;
+  storage_backend?: string;
+  coordination_backend?: string;
+  postgres_configured?: boolean;
+  redis_configured?: boolean;
+};
+
 const API_BASE = import.meta.env.VITE_TRADINGAGENTS_API ?? 'http://localhost:8000';
 
 async function request<T>(path: string, token: string | null, init: RequestInit = {}): Promise<T> {
@@ -127,6 +136,7 @@ async function request<T>(path: string, token: string | null, init: RequestInit 
 }
 
 export const api = {
+  health: () => request<RuntimeHealth>('/api/health', null),
   login: (email: string, password: string) => request<{ access_token: string; user: { email: string } }>('/api/auth/login', null, { method: 'POST', body: JSON.stringify({ email, password }) }),
   register: (email: string, password: string) => request('/api/auth/register', null, { method: 'POST', body: JSON.stringify({ email, password }) }),
   logout: (token: string) => request('/api/auth/logout', token, { method: 'POST' }),

@@ -7,6 +7,7 @@ import {
   canManageWorkspaceMembers,
   formatWorkspaceRoleLabel,
   parseAnalystsInput,
+  shouldShowClusterRuntimeWarning,
   shouldShowProductionSafetyWarning
 } from './App';
 import type { AnalysisTask } from './api';
@@ -149,6 +150,33 @@ describe('production hardening frontend helpers', () => {
 
   it('builds deterministic export filenames from export timestamps', () => {
     expect(accountExportFilename('2026-05-05T11:00:00+00:00')).toBe('tradingagents-export-2026-05-05.json');
+  });
+});
+
+describe('cluster runtime frontend helpers', () => {
+  it('warns only when cluster health is inconsistent', () => {
+    expect(shouldShowClusterRuntimeWarning(null)).toBe(false);
+    expect(shouldShowClusterRuntimeWarning({ status: 'ok', runtime_mode: 'local' })).toBe(false);
+    expect(
+      shouldShowClusterRuntimeWarning({
+        status: 'ok',
+        runtime_mode: 'production-cluster',
+        storage_backend: 'sqlite',
+        coordination_backend: 'memory',
+        postgres_configured: false,
+        redis_configured: false
+      })
+    ).toBe(true);
+    expect(
+      shouldShowClusterRuntimeWarning({
+        status: 'ok',
+        runtime_mode: 'production-cluster',
+        storage_backend: 'postgres',
+        coordination_backend: 'redis',
+        postgres_configured: true,
+        redis_configured: true
+      })
+    ).toBe(false);
   });
 });
 
