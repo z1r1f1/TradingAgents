@@ -6,10 +6,19 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from tradingagents.web import main as web_main
 from tradingagents.web.main import create_app
-from tradingagents.web.maintenance import backup_sqlite_database
+from tradingagents.web.maintenance import (
+    apply_sqlite_to_postgres_migration,
+    backup_sqlite_database,
+    plan_sqlite_to_postgres_migration,
+    validate_sqlite_to_postgres_migration,
+)
+from tradingagents.web.coordination import InMemoryCoordinator
 from tradingagents.web.database import WebRepository
+from tradingagents.web.runner import DemoAnalysisRunner
 from tradingagents.web.settings import WebSettings
+from tradingagents.web.usage import reconcile_usage_ledger
 
 
 def make_client(tmp_path: Path) -> tuple[TestClient, Path]:
@@ -1102,3 +1111,131 @@ def test_backup_helper_rejects_missing_source_database(tmp_path: Path):
     missing = tmp_path / "missing.sqlite3"
     with pytest.raises(FileNotFoundError):
         backup_sqlite_database(missing, tmp_path / "backup.sqlite3")
+
+
+def test_sqlite_to_postgres_migration_plan_apply_validate_is_idempotent(tmp_path: Path):
+    source_path = tmp_path / "source.sqlite3"
+    source = WebRepository(source_path)
+    user = source.create_user("migrate@example.com", "correct horse battery staple")
+    task = source.create_task(
+        user["id"],
+        {
+            "ticker": "SPY",
+            "analysis_date": "2026-05-01",
+            "analysts": ["market"],
+            "research_depth": 1,
+            "llm_provider": "openai",
+            "quick_model": "gpt-5.4-mini",
+            "deep_model": "gpt-5.5",
+            "output_language": "English",
+        },
+    )
+    source.append_audit_log("analysis.create", user_id=user["id"], workspace_id=task["workspace_id"], resource_type="analysis", resource_id=task["id"])
+    backup_path = backup_sqlite_database(source_path, tmp_path / "backup.sqlite3")
+
+    plan = plan_sqlite_to_postgres_migration(source_path, backup_path=backup_path)
+    assert plan["tables"]["users"]["row_count"] == 1
+    assert plan["tables"]["analysis_tasks"]["row_count"] == 1
+    assert plan["backup"]["ok"] is True
+
+    target_path = tmp_path / "target.sqlite3"
+    WebRepository(target_path)
+    applied = apply_sqlite_to_postgres_migration(source_path, target_path, backup_path=backup_path)
+    assert applied["applied"] is True
+    assert applied["tables"]["users"]["inserted_rows"] == 1
+    assert applied["tables"]["analysis_tasks"]["inserted_rows"] == 1
+
+    second = apply_sqlite_to_postgres_migration(source_path, target_path, backup_path=backup_path)
+    assert second["tables"]["users"]["inserted_rows"] == 0
+    assert second["tables"]["analysis_tasks"]["inserted_rows"] == 0
+
+    validation = validate_sqlite_to_postgres_migration(source_path, target_path)
+    assert validation["ok"] is True
+    assert validation["tables"]["analysis_tasks"]["source_count"] == validation["tables"]["analysis_tasks"]["target_count"] == 1
+
+
+def test_usage_ledger_reconciliation_repairs_coordinator_drift(tmp_path: Path):
+    repository = WebRepository(tmp_path / "web.sqlite3")
+    user = repository.create_user("ledger@example.com", "correct horse battery staple")
+    workspace_id = repository.get_personal_workspace_id(user["id"])
+    first = repository.record_usage_ledger(
+        user_id=user["id"],
+        workspace_id=workspace_id,
+        resource_type="analysis",
+        resource_id="task-1",
+        period_kind="daily",
+        occurred_at="2026-05-05T10:00:00+00:00",
+    )
+    repository.record_usage_ledger(
+        user_id=user["id"],
+        workspace_id=workspace_id,
+        resource_type="analysis",
+        resource_id="task-2",
+        period_kind="daily",
+        occurred_at="2026-05-05T11:00:00+00:00",
+    )
+    coordinator = InMemoryCoordinator(namespace="phase8")
+    coordinator.set_budget_usage(
+        user_id=user["id"],
+        workspace_id=workspace_id,
+        user_count=0,
+        workspace_count=5,
+        period_key=first["window_key"],
+    )
+
+    result = reconcile_usage_ledger(
+        repository,
+        coordinator,
+        period_kind="daily",
+        as_of="2026-05-05T23:59:00+00:00",
+        repair=True,
+        user_id=user["id"],
+        workspace_id=workspace_id,
+    )
+
+    assert result["window_key"] == first["window_key"]
+    assert result["repair_applied"] is True
+    assert result["drift"][0]["expected_user_count"] == 2
+    assert result["drift"][0]["expected_workspace_count"] == 2
+    assert coordinator.describe_budget(user_id=user["id"], workspace_id=workspace_id, period_key=first["window_key"]) == {
+        "user": 2,
+        "workspace": 2,
+    }
+
+
+def test_real_runner_analysis_records_usage_ledger_entries(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(web_main, "TradingAgentsGraphRunner", DemoAnalysisRunner)
+    settings = WebSettings(
+        database_path=tmp_path / "web.sqlite3",
+        auth_secret="test-secret",
+        runner_mode="real",
+        allow_registration=True,
+        real_runner_user_analysis_limit=5,
+        real_runner_workspace_analysis_limit=5,
+        real_runner_budget_period="daily",
+    )
+    client = TestClient(create_app(settings=settings, run_tasks_inline=True))
+    headers = login(client)
+
+    response = client.post(
+        "/api/analyses",
+        headers=headers,
+        json={
+            "ticker": "SPY",
+            "analysis_date": "2026-05-01",
+            "analysts": ["market"],
+            "research_depth": 1,
+            "llm_provider": "openai",
+            "quick_model": "gpt-5.4-mini",
+            "deep_model": "gpt-5.5",
+            "output_language": "English",
+        },
+    )
+
+    assert response.status_code == 201
+    repository = WebRepository(tmp_path / "web.sqlite3")
+    entries = repository.list_usage_ledger()
+    assert len(entries) == 1
+    assert entries[0]["resource_type"] == "analysis"
+    assert entries[0]["resource_id"] == str(response.json()["id"])
+    assert entries[0]["period_kind"] == "daily"

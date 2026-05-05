@@ -1,5 +1,10 @@
 # Phase 8 Goal: Migration, Usage Reconciliation, and Operational Cost Governance
 
+## Status
+
+- State: In progress
+- Team execution is underway; do not mark this phase complete until implementation and required validation are finished.
+
 ## Objective
 
 Add production operations tooling for the Phase 7 cluster runtime by implementing an auditable SQLite-to-Postgres migration path, Redis budget reset/reconciliation workflows, provider-usage reconciliation seams, and operator-facing cost/governance reports while preserving Phase 1-7 behavior and CLI compatibility.
