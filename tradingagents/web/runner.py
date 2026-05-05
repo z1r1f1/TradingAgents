@@ -75,16 +75,82 @@ class TradingAgentsGraphRunner:
             }
         )
         graph = TradingAgentsGraph(params.analysts, config=config, debug=False)
-        final_state, decision = graph.propagate(params.ticker, params.analysis_date.isoformat())
+        final_state = self._stream_graph(params, graph, emit)
         sections = self._sections_from_state(final_state)
-        for section, content in sections.items():
-            emit(EventPayload(agent=self._agent_for_section(section), event_type="report.section", message=str(content)[:500], payload={"section": section}))
-        raw = final_state.get("final_trade_decision", str(decision))
+        raw = final_state.get("final_trade_decision", "")
+        decision = graph.process_signal(raw)
+        if hasattr(graph, "curr_state"):
+            graph.curr_state = final_state
+        self._persist_core_side_effects(params, graph, final_state)
         emit(EventPayload(agent="Portfolio Manager", event_type="agent.completed", message=str(raw)[:500]))
+        emit(EventPayload(agent="System", event_type="task.completed", message=f"Completed graph for {params.ticker}"))
         return RunnerResult(
             report_sections=sections,
             final_decision={"decision": str(decision).upper(), "confidence": None, "rationale": str(raw), "raw_decision": str(raw)},
         )
+
+    def _stream_graph(self, params: AnalysisCreate, graph: Any, emit: EventCallback) -> dict[str, Any]:
+        trade_date = params.analysis_date.isoformat()
+        if hasattr(graph, "ticker"):
+            graph.ticker = params.ticker
+        if hasattr(graph, "_resolve_pending_entries"):
+            graph._resolve_pending_entries(params.ticker)
+        past_context = ""
+        if hasattr(graph, "memory_log") and hasattr(graph.memory_log, "get_past_context"):
+            past_context = graph.memory_log.get_past_context(params.ticker)
+        init_agent_state = graph.propagator.create_initial_state(
+            params.ticker,
+            trade_date,
+            past_context=past_context,
+        )
+        args = graph.propagator.get_graph_args()
+        final_state: dict[str, Any] | None = None
+        emitted_sections: dict[str, str] = {}
+        for chunk in graph.graph.stream(init_agent_state, **args):
+            final_state = chunk
+            self._emit_messages(chunk, emit)
+            self._emit_report_sections(chunk, emit, emitted_sections)
+        if not final_state:
+            raise RuntimeError("TradingAgents graph produced no final state")
+        return final_state
+
+    def _emit_report_sections(self, state: dict[str, Any], emit: EventCallback, emitted_sections: dict[str, str]) -> None:
+        for section, content in self._sections_from_state(state).items():
+            text = str(content)
+            if emitted_sections.get(section) == text:
+                continue
+            emitted_sections[section] = text
+            emit(
+                EventPayload(
+                    agent=self._agent_for_section(section),
+                    event_type="report.section",
+                    message=text[:500],
+                    payload={"section": section},
+                )
+            )
+
+    def _emit_messages(self, state: dict[str, Any], emit: EventCallback) -> None:
+        for message in state.get("messages", []) or []:
+            content = getattr(message, "content", None)
+            if isinstance(content, list):
+                content = " ".join(str(item.get("text", item)) if isinstance(item, dict) else str(item) for item in content)
+            if content:
+                emit(EventPayload(agent="Graph", event_type="agent.message", message=str(content)[:500]))
+            for tool_call in getattr(message, "tool_calls", []) or []:
+                name = tool_call.get("name") if isinstance(tool_call, dict) else getattr(tool_call, "name", "tool")
+                args = tool_call.get("args") if isinstance(tool_call, dict) else getattr(tool_call, "args", {})
+                emit(EventPayload(agent="Graph", event_type="tool.call", message=str(name), payload={"args": args}))
+
+    def _persist_core_side_effects(self, params: AnalysisCreate, graph: Any, final_state: dict[str, Any]) -> None:
+        trade_date = params.analysis_date.isoformat()
+        if hasattr(graph, "_log_state"):
+            graph._log_state(trade_date, final_state)
+        if hasattr(graph, "memory_log") and hasattr(graph.memory_log, "store_decision") and final_state.get("final_trade_decision"):
+            graph.memory_log.store_decision(
+                ticker=params.ticker,
+                trade_date=trade_date,
+                final_trade_decision=final_state["final_trade_decision"],
+            )
 
     def _sections_from_state(self, final_state: dict[str, Any]) -> dict[str, str]:
         keys = [

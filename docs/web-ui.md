@@ -80,3 +80,37 @@ The web runner accepts an `emit(EventPayload)` callback. Each event is persisted
 - Background task execution uses FastAPI background tasks, not Redis/Celery.
 - No production RBAC, OAuth, billing, team collaboration, external DB, object storage, broker integration, or scheduler is included.
 - Scheduler, per-agent memory selection, and mid-run human takeover are reserved as future extension points only.
+
+## External-access authentication defaults
+
+Phase 1 is safe for authenticated external access only when deployed behind HTTPS and configured deliberately:
+
+- The API binds to `0.0.0.0` by default so containers and remote browsers can reach it.
+- Self-registration is enabled by default for local evaluation (`TRADINGAGENTS_WEB_ALLOW_REGISTRATION=1`). Disable it for any shared or internet-reachable deployment after provisioning users: `TRADINGAGENTS_WEB_ALLOW_REGISTRATION=0`.
+- Authentication uses opaque bearer tokens. Tokens are returned only by `POST /api/auth/login`; SQLite stores only SHA-256 token hashes.
+- Passwords are stored as PBKDF2-SHA256 hashes, never plaintext.
+- The default runner is `demo` to avoid accidental external LLM/data-provider calls. Set `TRADINGAGENTS_WEB_RUNNER=real` only when API keys, data-provider access, cost controls, and rate limits are ready.
+- CORS defaults to local Vite origins. Set `TRADINGAGENTS_WEB_CORS_ORIGINS` to the exact production frontend origin before exposing the API.
+
+## Production hardening requirements before internet deployment
+
+Before deploying beyond a trusted development network, add or enforce:
+
+- HTTPS/TLS termination and secure reverse-proxy headers.
+- Strong random secret management; do not rely on local defaults.
+- Registration controls or an admin user-provisioning flow.
+- Token expiry/rotation policy, session revocation UI, and audit logging.
+- Rate limiting for login, registration, analysis creation, and SSE endpoints.
+- CSRF strategy if browser cookie auth is introduced later; current Phase 1 uses bearer tokens.
+- Origin allowlisting, security headers, and host/firewall restrictions.
+- Backups and migration strategy for SQLite, or a future approved DB migration.
+- Provider cost/rate-limit safeguards for `TRADINGAGENTS_WEB_RUNNER=real`.
+- Secrets scanning and runtime DB exclusion in CI/CD artifacts.
+
+## Real runner progressive events
+
+The production web runner streams the actual `TradingAgentsGraph.graph.stream(...)` execution and emits/persists section and message events as chunks arrive. It does not call the Rich CLI `run_analysis()` wrapper, so CLI prompts, terminal state, and Telegram side effects remain isolated from web execution. Final report sections and the final decision are persisted after the stream completes.
+
+## Adjustable history rerun workflow
+
+History cards and completed task details include a load/template action. Loading a historical task copies its persisted parameters into the analysis form; users can edit ticker, date, analysts, research depth, provider/model fields, and output language, then press **Launch analysis** to create a new task. The existing rerun endpoint remains available for same-parameter or API-driven override reruns.

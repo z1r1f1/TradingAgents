@@ -130,3 +130,87 @@ def test_history_detail_rerun_and_sse_events(tmp_path: Path):
     assert rerun_detail["parameters"]["ticker"] == "AAPL"
     assert rerun_detail["parameters"]["analysts"] == ["fundamentals"]
     assert rerun_detail["parameters"]["research_depth"] == 2
+
+
+def test_real_graph_runner_emits_progressive_events_from_stream(monkeypatch):
+    """Real runner seam must stream graph chunks instead of waiting for propagate()."""
+
+    from tradingagents.web.runner import TradingAgentsGraphRunner
+    from tradingagents.web.schemas import AnalysisCreate
+    import tradingagents.graph.trading_graph as trading_graph_module
+
+    emitted: list[tuple[str, str, str]] = []
+
+    class FakeMemoryLog:
+        def get_past_context(self, ticker):
+            assert ticker == "SPY"
+            return "past context"
+
+    class FakePropagator:
+        def create_initial_state(self, ticker, analysis_date, past_context=None):
+            assert (ticker, analysis_date, past_context) == ("SPY", "2026-05-01", "past context")
+            return {"ticker": ticker}
+
+        def get_graph_args(self):
+            return {}
+
+    class FakeCompiledGraph:
+        def stream(self, initial_state, **kwargs):
+            assert initial_state == {"ticker": "SPY"}
+            yield {
+                "market_report": "market report while running",
+                "messages": [],
+            }
+            yield {
+                "investment_plan": "research manager plan while running",
+                "messages": [],
+            }
+            yield {
+                "market_report": "market report final",
+                "investment_plan": "research manager plan final",
+                "trader_investment_plan": "trader plan final",
+                "final_trade_decision": "BUY SPY because momentum improved",
+                "messages": [],
+            }
+
+    class FakeTradingAgentsGraph:
+        def __init__(self, selected_analysts, config, debug=False):
+            assert selected_analysts == ["market"]
+            assert config["max_debate_rounds"] == 1
+            self.memory_log = FakeMemoryLog()
+            self.propagator = FakePropagator()
+            self.graph = FakeCompiledGraph()
+            self.curr_state = None
+
+        def propagate(self, *args, **kwargs):  # pragma: no cover - should not be reached
+            raise AssertionError("runner must stream progressively instead of waiting for propagate")
+
+        def process_signal(self, raw_signal):
+            assert raw_signal == "BUY SPY because momentum improved"
+            return "BUY"
+
+    monkeypatch.setattr(trading_graph_module, "TradingAgentsGraph", FakeTradingAgentsGraph)
+
+    params = AnalysisCreate(
+        ticker="SPY",
+        analysis_date="2026-05-01",
+        analysts=["market"],
+        research_depth=1,
+        llm_provider="openai",
+        quick_model="gpt-5.4-mini",
+        deep_model="gpt-5.5",
+        output_language="English",
+    )
+
+    result = TradingAgentsGraphRunner().run(
+        params,
+        lambda event: emitted.append((event.agent, event.event_type, event.message)),
+    )
+
+    assert ("Market Analyst", "report.section", "market report while running") in emitted
+    assert ("Research Manager", "report.section", "research manager plan while running") in emitted
+    assert emitted.index(("Market Analyst", "report.section", "market report while running")) < emitted.index(
+        ("Portfolio Manager", "agent.completed", "BUY SPY because momentum improved")
+    )
+    assert result.final_decision["decision"] == "BUY"
+    assert result.report_sections["market_report"] == "market report final"
