@@ -7,11 +7,15 @@ from pathlib import Path
 
 def backup_sqlite_database(source: Path | str, destination: Path | str) -> Path:
     source_path = Path(source).expanduser()
+    if not source_path.exists():
+        raise FileNotFoundError(f"SQLite source database does not exist: {source_path}")
     destination_path = Path(destination).expanduser()
     destination_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(source_path) as source_conn, sqlite3.connect(destination_path) as destination_conn:
         source_conn.backup(destination_conn)
-        destination_conn.execute("pragma integrity_check").fetchone()
+        integrity = destination_conn.execute("pragma integrity_check").fetchone()
+        if not integrity or integrity[0] != "ok":
+            raise RuntimeError(f"SQLite backup integrity check failed: {integrity[0] if integrity else 'no result'}")
     return destination_path
 
 

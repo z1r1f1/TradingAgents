@@ -24,6 +24,9 @@ from .schemas import (
     MemoryUpdate,
     TokenResponse,
     UserCreate,
+    WorkspaceCreate,
+    WorkspaceMemberCreate,
+    WorkspaceMemberUpdate,
 )
 from .scheduler import SchedulerService, format_iso_datetime
 from .service import AnalysisService
@@ -78,6 +81,7 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
         user_id: int | None = None,
         resource_type: str | None = None,
         resource_id: int | str | None = None,
+        workspace_id: int | None = None,
         metadata: dict | None = None,
         request: Request | None = None,
     ) -> None:
@@ -86,9 +90,50 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
             user_id=user_id,
             resource_type=resource_type,
             resource_id=resource_id,
+            workspace_id=workspace_id,
             metadata=metadata,
             ip_address=request_ip(request),
         )
+
+    def workspace_role(user: dict, workspace_id: int | None) -> tuple[int, str]:
+        resolved = repository.resolve_workspace_id(user["id"], workspace_id)
+        role = repository.get_workspace_role(user["id"], resolved)
+        if not role:
+            raise HTTPException(status_code=404, detail="workspace not found")
+        return resolved, role
+
+    def require_workspace_role(user: dict, workspace_id: int | None, allowed: set[str]) -> tuple[int, str]:
+        resolved, role = workspace_role(user, workspace_id)
+        if role not in allowed:
+            raise HTTPException(status_code=403, detail="workspace role is not allowed")
+        return resolved, role
+
+    def enforce_real_runner_budget(user: dict, workspace_id: int, request: Request) -> None:
+        if settings.runner_mode == "demo":
+            return
+        if settings.real_runner_user_analysis_limit >= 0 and repository.count_analysis_tasks(user_id=user["id"]) >= settings.real_runner_user_analysis_limit:
+            audit(
+                "cost.blocked",
+                user_id=user["id"],
+                workspace_id=workspace_id,
+                resource_type="analysis",
+                metadata={"reason": "user budget exceeded"},
+                request=request,
+            )
+            raise HTTPException(status_code=402, detail="user real-runner budget exceeded")
+        if (
+            settings.real_runner_workspace_analysis_limit >= 0
+            and repository.count_analysis_tasks(workspace_id=workspace_id) >= settings.real_runner_workspace_analysis_limit
+        ):
+            audit(
+                "cost.blocked",
+                user_id=user["id"],
+                workspace_id=workspace_id,
+                resource_type="analysis",
+                metadata={"reason": "workspace budget exceeded"},
+                request=request,
+            )
+            raise HTTPException(status_code=402, detail="workspace real-runner budget exceeded")
 
     def rate_identity(request: Request, user: dict | None = None) -> str:
         if user:
@@ -160,6 +205,69 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
     def me(user: dict = Depends(current_user)) -> dict:
         return user
 
+    @app.get("/api/workspaces")
+    def list_workspaces(user: dict = Depends(current_user)) -> dict:
+        return {"items": repository.list_workspaces_for_user(user["id"])}
+
+    @app.post("/api/workspaces", status_code=201)
+    def create_workspace(payload: WorkspaceCreate, request: Request, user: dict = Depends(current_user)) -> dict:
+        enforce_rate_limit("mutation", request, settings.mutation_rate_limit, user)
+        workspace = repository.create_workspace(user["id"], payload.name)
+        audit("workspace.create", user_id=user["id"], workspace_id=workspace["id"], resource_type="workspace", resource_id=workspace["id"], request=request)
+        return workspace
+
+    @app.get("/api/workspaces/{workspace_id}")
+    def get_workspace(workspace_id: int, user: dict = Depends(current_user)) -> dict:
+        workspace = repository.get_workspace_for_user(workspace_id, user["id"])
+        if not workspace:
+            raise HTTPException(status_code=404, detail="workspace not found")
+        return workspace
+
+    @app.post("/api/workspaces/{workspace_id}/members", status_code=201)
+    def add_workspace_member(workspace_id: int, payload: WorkspaceMemberCreate, request: Request, user: dict = Depends(current_user)) -> dict:
+        require_workspace_role(user, workspace_id, {"owner", "admin"})
+        member = repository.add_workspace_member(workspace_id, payload.email, payload.role)
+        if not member:
+            raise HTTPException(status_code=404, detail="user not found")
+        audit(
+            "workspace.member.add",
+            user_id=user["id"],
+            workspace_id=workspace_id,
+            resource_type="workspace_member",
+            resource_id=member["user_id"],
+            metadata={"role": payload.role},
+            request=request,
+        )
+        return member
+
+    @app.patch("/api/workspaces/{workspace_id}/members/{member_user_id}")
+    def update_workspace_member(workspace_id: int, member_user_id: int, payload: WorkspaceMemberUpdate, request: Request, user: dict = Depends(current_user)) -> dict:
+        require_workspace_role(user, workspace_id, {"owner", "admin"})
+        try:
+            member = repository.update_workspace_member_role(workspace_id, member_user_id, payload.role)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if not member:
+            raise HTTPException(status_code=404, detail="workspace member not found")
+        audit(
+            "workspace.member.role",
+            user_id=user["id"],
+            workspace_id=workspace_id,
+            resource_type="workspace_member",
+            resource_id=member_user_id,
+            metadata={"role": payload.role},
+            request=request,
+        )
+        return member
+
+    @app.delete("/api/workspaces/{workspace_id}/members/{member_user_id}", status_code=204)
+    def remove_workspace_member(workspace_id: int, member_user_id: int, request: Request, user: dict = Depends(current_user)) -> Response:
+        require_workspace_role(user, workspace_id, {"owner", "admin"})
+        if not repository.remove_workspace_member(workspace_id, member_user_id):
+            raise HTTPException(status_code=409, detail="workspace member cannot be removed")
+        audit("workspace.member.remove", user_id=user["id"], workspace_id=workspace_id, resource_type="workspace_member", resource_id=member_user_id, request=request)
+        return Response(status_code=204)
+
     @app.post("/api/analyses", status_code=201)
     def create_analysis(
         payload: AnalysisCreate,
@@ -168,16 +276,21 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
         user: dict = Depends(current_user),
     ) -> dict:
         enforce_rate_limit("analysis", request, settings.analysis_rate_limit, user)
+        workspace_id, _ = require_workspace_role(user, payload.workspace_id, {"owner", "admin", "member"})
+        payload = payload.model_copy(update={"workspace_id": workspace_id})
+        enforce_real_runner_budget(user, workspace_id, request)
         task = service.create_analysis(user["id"], payload, run_inline=run_tasks_inline)
-        audit("analysis.create", user_id=user["id"], resource_type="analysis", resource_id=task["id"], request=request)
+        audit("analysis.create", user_id=user["id"], workspace_id=workspace_id, resource_type="analysis", resource_id=task["id"], request=request)
         if not run_tasks_inline:
             background_tasks.add_task(service.run_task, task["id"], payload)
         return task
 
     @app.get("/api/analyses")
     @app.get("/api/history")
-    def list_analyses(user: dict = Depends(current_user)) -> dict:
-        return {"items": repository.list_tasks_for_user(user["id"])}
+    def list_analyses(workspace_id: int | None = None, user: dict = Depends(current_user)) -> dict:
+        if workspace_id is not None:
+            require_workspace_role(user, workspace_id, {"owner", "admin", "member", "viewer"})
+        return {"items": repository.list_tasks_for_user(user["id"], workspace_id)}
 
     @app.get("/api/analyses/{task_id}")
     @app.get("/api/history/{task_id}")
@@ -197,12 +310,19 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
         user: dict = Depends(current_user),
     ) -> dict:
         enforce_rate_limit("analysis", request, settings.analysis_rate_limit, user)
+        source = repository.get_task_for_user(task_id, user["id"], include_detail=False)
+        if not source:
+            raise HTTPException(status_code=404, detail="analysis not found")
+        workspace_id, _ = require_workspace_role(user, payload.workspace_id or source.get("workspace_id"), {"owner", "admin", "member"})
+        payload = payload.model_copy(update={"workspace_id": workspace_id})
+        enforce_real_runner_budget(user, workspace_id, request)
         task = service.rerun(user["id"], task_id, payload, run_inline=run_tasks_inline)
         if not task:
             raise HTTPException(status_code=404, detail="analysis not found")
         audit(
             "analysis.rerun",
             user_id=user["id"],
+            workspace_id=workspace_id,
             resource_type="analysis",
             resource_id=task["id"],
             metadata={"source_analysis_task_id": task_id},
@@ -216,35 +336,78 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
     @app.delete("/api/history/{task_id}", status_code=204)
     def delete_analysis(task_id: int, request: Request, user: dict = Depends(current_user)) -> Response:
         enforce_rate_limit("mutation", request, settings.mutation_rate_limit, user)
+        task = repository.get_task_for_user(task_id, user["id"], include_detail=False)
+        if not task:
+            raise HTTPException(status_code=404, detail="analysis not found")
+        require_workspace_role(user, task.get("workspace_id"), {"owner", "admin"})
         if not repository.delete_task_for_user(task_id, user["id"]):
             raise HTTPException(status_code=404, detail="analysis not found")
-        audit("analysis.delete", user_id=user["id"], resource_type="analysis", resource_id=task_id, request=request)
+        audit("analysis.delete", user_id=user["id"], workspace_id=task.get("workspace_id"), resource_type="analysis", resource_id=task_id, request=request)
         return Response(status_code=204)
 
     @app.get("/api/account/export")
-    def export_account(request: Request, user: dict = Depends(current_user)) -> dict:
+    def export_account(request: Request, workspace_id: int | None = None, user: dict = Depends(current_user)) -> dict:
         enforce_rate_limit("export", request, settings.mutation_rate_limit, user)
-        data = repository.export_user_data(user["id"])
-        audit("account.export", user_id=user["id"], resource_type="account", resource_id=user["id"], request=request)
+        if workspace_id is not None:
+            require_workspace_role(user, workspace_id, {"owner", "admin", "member", "viewer"})
+        data = repository.export_user_data(user["id"], workspace_id)
+        audit("account.export", user_id=user["id"], workspace_id=workspace_id, resource_type="account", resource_id=user["id"], request=request)
         return data
 
     @app.get("/api/account/audit")
     def list_account_audit(user: dict = Depends(current_user)) -> dict:
         return {"items": repository.list_audit_logs_for_user(user["id"])}
 
+    @app.get("/api/governance/audit")
+    def governance_audit(
+        workspace_id: int | None = None,
+        user_id: int | None = None,
+        event_type: str | None = None,
+        start_at: str | None = None,
+        end_at: str | None = None,
+        user: dict = Depends(current_user),
+    ) -> dict:
+        if workspace_id is not None:
+            require_workspace_role(user, workspace_id, {"owner", "admin", "member", "viewer"})
+        return {
+            "items": repository.list_audit_logs_for_user(
+                user["id"],
+                workspace_id=workspace_id,
+                target_user_id=user_id,
+                event_type=event_type,
+                start_at=start_at,
+                end_at=end_at,
+            )
+        }
+
+    @app.get("/api/workspaces/{workspace_id}/export")
+    def export_workspace(workspace_id: int, request: Request, user: dict = Depends(current_user)) -> dict:
+        enforce_rate_limit("export", request, settings.mutation_rate_limit, user)
+        require_workspace_role(user, workspace_id, {"owner", "admin", "member", "viewer"})
+        data = repository.export_user_data(user["id"], workspace_id)
+        audit("workspace.export", user_id=user["id"], workspace_id=workspace_id, resource_type="workspace", resource_id=workspace_id, request=request)
+        return data
+
     @app.get("/api/interventions")
-    def list_interventions(user: dict = Depends(current_user)) -> dict:
-        return {"items": repository.list_interventions_for_user(user["id"])}
+    def list_interventions(workspace_id: int | None = None, user: dict = Depends(current_user)) -> dict:
+        if workspace_id is not None:
+            require_workspace_role(user, workspace_id, {"owner", "admin", "member", "viewer"})
+        return {"items": repository.list_interventions_for_user(user["id"], workspace_id)}
 
     @app.post("/api/interventions", status_code=201)
     def create_intervention(payload: InterventionCreate, request: Request, user: dict = Depends(current_user)) -> dict:
         enforce_rate_limit("mutation", request, settings.mutation_rate_limit, user)
+        source = repository.get_task_for_user(payload.source_analysis_task_id, user["id"], include_detail=False)
+        if not source:
+            raise HTTPException(status_code=404, detail="analysis not found")
+        workspace_id, _ = require_workspace_role(user, payload.workspace_id or source.get("workspace_id"), {"owner", "admin", "member"})
         session = repository.create_intervention_session(user["id"], payload.source_analysis_task_id, payload.target_agent_name)
         if not session:
             raise HTTPException(status_code=404, detail="analysis not found")
         audit(
             "intervention.create",
             user_id=user["id"],
+            workspace_id=workspace_id,
             resource_type="intervention",
             resource_id=session["id"],
             metadata={"source_analysis_task_id": payload.source_analysis_task_id, "target_agent_name": payload.target_agent_name},
@@ -262,12 +425,14 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
     @app.post("/api/interventions/{session_id}/messages", status_code=201)
     def append_intervention_message(session_id: int, payload: InterventionMessageCreate, request: Request, user: dict = Depends(current_user)) -> dict:
         enforce_rate_limit("mutation", request, settings.mutation_rate_limit, user)
-        if not repository.get_intervention_for_user(session_id, user["id"]):
+        session = repository.get_intervention_for_user(session_id, user["id"])
+        if not session:
             raise HTTPException(status_code=404, detail="intervention not found")
+        require_workspace_role(user, session.get("workspace_id"), {"owner", "admin", "member"})
         message = repository.append_intervention_message(session_id, user["id"], payload.content)
         if not message:
             raise HTTPException(status_code=409, detail="intervention is not open")
-        audit("intervention.message", user_id=user["id"], resource_type="intervention", resource_id=session_id, request=request)
+        audit("intervention.message", user_id=user["id"], workspace_id=session.get("workspace_id"), resource_type="intervention", resource_id=session_id, request=request)
         return message
 
     @app.post("/api/interventions/{session_id}/pause")
@@ -276,12 +441,13 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
         current = repository.get_intervention_for_user(session_id, user["id"])
         if not current:
             raise HTTPException(status_code=404, detail="intervention not found")
+        require_workspace_role(user, current.get("workspace_id"), {"owner", "admin", "member"})
         if current["status"] == "closed":
             raise HTTPException(status_code=409, detail="intervention is closed")
         session = repository.set_intervention_status(session_id, user["id"], "paused")
         if not session:
             raise HTTPException(status_code=404, detail="intervention not found")
-        audit("intervention.pause", user_id=user["id"], resource_type="intervention", resource_id=session_id, request=request)
+        audit("intervention.pause", user_id=user["id"], workspace_id=current.get("workspace_id"), resource_type="intervention", resource_id=session_id, request=request)
         return session
 
     @app.post("/api/interventions/{session_id}/resume")
@@ -290,45 +456,58 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
         current = repository.get_intervention_for_user(session_id, user["id"])
         if not current:
             raise HTTPException(status_code=404, detail="intervention not found")
+        require_workspace_role(user, current.get("workspace_id"), {"owner", "admin", "member"})
         if current["status"] == "closed":
             raise HTTPException(status_code=409, detail="intervention is closed")
         session = repository.set_intervention_status(session_id, user["id"], "open")
         if not session:
             raise HTTPException(status_code=404, detail="intervention not found")
-        audit("intervention.resume", user_id=user["id"], resource_type="intervention", resource_id=session_id, request=request)
+        audit("intervention.resume", user_id=user["id"], workspace_id=current.get("workspace_id"), resource_type="intervention", resource_id=session_id, request=request)
         return session
 
     @app.post("/api/interventions/{session_id}/close")
     def close_intervention(session_id: int, request: Request, user: dict = Depends(current_user)) -> dict:
         enforce_rate_limit("mutation", request, settings.mutation_rate_limit, user)
+        current = repository.get_intervention_for_user(session_id, user["id"])
+        if not current:
+            raise HTTPException(status_code=404, detail="intervention not found")
+        require_workspace_role(user, current.get("workspace_id"), {"owner", "admin", "member"})
         session = repository.set_intervention_status(session_id, user["id"], "closed")
         if not session:
             raise HTTPException(status_code=404, detail="intervention not found")
-        audit("intervention.close", user_id=user["id"], resource_type="intervention", resource_id=session_id, request=request)
+        audit("intervention.close", user_id=user["id"], workspace_id=current.get("workspace_id"), resource_type="intervention", resource_id=session_id, request=request)
         return session
 
     @app.post("/api/interventions/{session_id}/run", status_code=201)
     def run_intervention(session_id: int, request: Request, user: dict = Depends(current_user)) -> dict:
         enforce_rate_limit("intervention", request, settings.intervention_rate_limit, user)
-        if not repository.get_intervention_for_user(session_id, user["id"]):
+        current = repository.get_intervention_for_user(session_id, user["id"])
+        if not current:
             raise HTTPException(status_code=404, detail="intervention not found")
+        require_workspace_role(user, current.get("workspace_id"), {"owner", "admin", "member"})
+        enforce_real_runner_budget(user, int(current.get("workspace_id") or repository.get_personal_workspace_id(user["id"])), request)
         output = intervention_service.run_continuation(session_id, user["id"])
         if not output:
             raise HTTPException(status_code=409, detail="intervention is not open")
-        audit("intervention.run", user_id=user["id"], resource_type="intervention", resource_id=session_id, request=request)
+        audit("intervention.run", user_id=user["id"], workspace_id=current.get("workspace_id"), resource_type="intervention", resource_id=session_id, request=request)
         return output
 
     @app.delete("/api/interventions/{session_id}", status_code=204)
     def delete_intervention(session_id: int, request: Request, user: dict = Depends(current_user)) -> Response:
         enforce_rate_limit("mutation", request, settings.mutation_rate_limit, user)
+        current = repository.get_intervention_for_user(session_id, user["id"])
+        if not current:
+            raise HTTPException(status_code=404, detail="intervention not found")
+        require_workspace_role(user, current.get("workspace_id"), {"owner", "admin"})
         if not repository.delete_intervention_for_user(session_id, user["id"]):
             raise HTTPException(status_code=404, detail="intervention not found")
-        audit("intervention.delete", user_id=user["id"], resource_type="intervention", resource_id=session_id, request=request)
+        audit("intervention.delete", user_id=user["id"], workspace_id=current.get("workspace_id"), resource_type="intervention", resource_id=session_id, request=request)
         return Response(status_code=204)
 
     @app.get("/api/memories")
     def list_memories(
         request: Request,
+        workspace_id: int | None = None,
         ticker: str | None = None,
         agent: str | None = None,
         analysis_date: str | None = None,
@@ -337,9 +516,12 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
         user: dict = Depends(current_user),
     ) -> dict:
         enforce_rate_limit("memory", request, settings.mutation_rate_limit, user)
+        if workspace_id is not None:
+            require_workspace_role(user, workspace_id, {"owner", "admin", "member", "viewer"})
         return {
             "items": repository.list_memories_for_user(
                 user["id"],
+                workspace_id=workspace_id,
                 ticker=ticker,
                 agent=agent,
                 analysis_date=analysis_date,
@@ -359,40 +541,56 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
     @app.patch("/api/memories/{memory_id}")
     def update_memory(memory_id: int, payload: MemoryUpdate, request: Request, user: dict = Depends(current_user)) -> dict:
         enforce_rate_limit("mutation", request, settings.mutation_rate_limit, user)
+        current = repository.get_memory_for_user(memory_id, user["id"])
+        if not current:
+            raise HTTPException(status_code=404, detail="memory not found")
+        require_workspace_role(user, current.get("workspace_id"), {"owner", "admin", "member"})
         memory = repository.update_memory(memory_id, user["id"], payload)
         if not memory:
             raise HTTPException(status_code=404, detail="memory not found")
-        audit("memory.update", user_id=user["id"], resource_type="memory", resource_id=memory_id, request=request)
+        audit("memory.update", user_id=user["id"], workspace_id=current.get("workspace_id"), resource_type="memory", resource_id=memory_id, request=request)
         return memory
 
     @app.post("/api/memories/{memory_id}/archive")
     def archive_memory(memory_id: int, request: Request, user: dict = Depends(current_user)) -> dict:
         enforce_rate_limit("mutation", request, settings.mutation_rate_limit, user)
+        current = repository.get_memory_for_user(memory_id, user["id"])
+        if not current:
+            raise HTTPException(status_code=404, detail="memory not found")
+        require_workspace_role(user, current.get("workspace_id"), {"owner", "admin", "member"})
         memory = repository.set_memory_archived(memory_id, user["id"], True)
         if not memory:
             raise HTTPException(status_code=404, detail="memory not found")
-        audit("memory.archive", user_id=user["id"], resource_type="memory", resource_id=memory_id, request=request)
+        audit("memory.archive", user_id=user["id"], workspace_id=current.get("workspace_id"), resource_type="memory", resource_id=memory_id, request=request)
         return memory
 
     @app.post("/api/memories/{memory_id}/unarchive")
     def unarchive_memory(memory_id: int, request: Request, user: dict = Depends(current_user)) -> dict:
         enforce_rate_limit("mutation", request, settings.mutation_rate_limit, user)
+        current = repository.get_memory_for_user(memory_id, user["id"])
+        if not current:
+            raise HTTPException(status_code=404, detail="memory not found")
+        require_workspace_role(user, current.get("workspace_id"), {"owner", "admin", "member"})
         memory = repository.set_memory_archived(memory_id, user["id"], False)
         if not memory:
             raise HTTPException(status_code=404, detail="memory not found")
-        audit("memory.unarchive", user_id=user["id"], resource_type="memory", resource_id=memory_id, request=request)
+        audit("memory.unarchive", user_id=user["id"], workspace_id=current.get("workspace_id"), resource_type="memory", resource_id=memory_id, request=request)
         return memory
 
     @app.post("/api/schedules", status_code=201)
     def create_schedule(payload: ScheduledAnalysisCreate, request: Request, user: dict = Depends(current_user)) -> dict:
         enforce_rate_limit("mutation", request, settings.mutation_rate_limit, user)
+        workspace_id, _ = require_workspace_role(user, payload.workspace_id, {"owner", "admin", "member"})
+        payload = payload.model_copy(update={"workspace_id": workspace_id})
         schedule = scheduler_service.create_schedule(user["id"], payload)
-        audit("schedule.create", user_id=user["id"], resource_type="schedule", resource_id=schedule["id"], request=request)
+        audit("schedule.create", user_id=user["id"], workspace_id=workspace_id, resource_type="schedule", resource_id=schedule["id"], request=request)
         return schedule
 
     @app.get("/api/schedules")
-    def list_schedules(user: dict = Depends(current_user)) -> dict:
-        return {"items": repository.list_schedules_for_user(user["id"])}
+    def list_schedules(workspace_id: int | None = None, user: dict = Depends(current_user)) -> dict:
+        if workspace_id is not None:
+            require_workspace_role(user, workspace_id, {"owner", "admin", "member", "viewer"})
+        return {"items": repository.list_schedules_for_user(user["id"], workspace_id)}
 
     @app.get("/api/schedules/{schedule_id}")
     def get_schedule(schedule_id: int, user: dict = Depends(current_user)) -> dict:
@@ -404,47 +602,69 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
     @app.patch("/api/schedules/{schedule_id}")
     def update_schedule(schedule_id: int, payload: ScheduledAnalysisUpdate, request: Request, user: dict = Depends(current_user)) -> dict:
         enforce_rate_limit("mutation", request, settings.mutation_rate_limit, user)
+        current = repository.get_schedule_for_user(schedule_id, user["id"])
+        if not current:
+            raise HTTPException(status_code=404, detail="schedule not found")
+        require_workspace_role(user, current.get("workspace_id"), {"owner", "admin", "member"})
         schedule = repository.update_schedule(schedule_id, user["id"], payload)
         if not schedule:
             raise HTTPException(status_code=404, detail="schedule not found")
-        audit("schedule.update", user_id=user["id"], resource_type="schedule", resource_id=schedule_id, request=request)
+        audit("schedule.update", user_id=user["id"], workspace_id=current.get("workspace_id"), resource_type="schedule", resource_id=schedule_id, request=request)
         return schedule
 
     @app.delete("/api/schedules/{schedule_id}", status_code=204)
     def delete_schedule(schedule_id: int, request: Request, user: dict = Depends(current_user)) -> Response:
         enforce_rate_limit("mutation", request, settings.mutation_rate_limit, user)
+        current = repository.get_schedule_for_user(schedule_id, user["id"])
+        if not current:
+            raise HTTPException(status_code=404, detail="schedule not found")
+        require_workspace_role(user, current.get("workspace_id"), {"owner", "admin"})
         if not repository.delete_schedule(schedule_id, user["id"]):
             raise HTTPException(status_code=404, detail="schedule not found")
-        audit("schedule.delete", user_id=user["id"], resource_type="schedule", resource_id=schedule_id, request=request)
+        audit("schedule.delete", user_id=user["id"], workspace_id=current.get("workspace_id"), resource_type="schedule", resource_id=schedule_id, request=request)
         return Response(status_code=204)
 
     @app.post("/api/schedules/{schedule_id}/pause")
     def pause_schedule(schedule_id: int, request: Request, user: dict = Depends(current_user)) -> dict:
         enforce_rate_limit("mutation", request, settings.mutation_rate_limit, user)
+        current = repository.get_schedule_for_user(schedule_id, user["id"])
+        if not current:
+            raise HTTPException(status_code=404, detail="schedule not found")
+        require_workspace_role(user, current.get("workspace_id"), {"owner", "admin", "member"})
         schedule = repository.set_schedule_status(schedule_id, user["id"], "paused")
         if not schedule:
             raise HTTPException(status_code=404, detail="schedule not found")
-        audit("schedule.pause", user_id=user["id"], resource_type="schedule", resource_id=schedule_id, request=request)
+        audit("schedule.pause", user_id=user["id"], workspace_id=current.get("workspace_id"), resource_type="schedule", resource_id=schedule_id, request=request)
         return schedule
 
     @app.post("/api/schedules/{schedule_id}/resume")
     def resume_schedule(schedule_id: int, request: Request, user: dict = Depends(current_user)) -> dict:
         enforce_rate_limit("mutation", request, settings.mutation_rate_limit, user)
+        current = repository.get_schedule_for_user(schedule_id, user["id"])
+        if not current:
+            raise HTTPException(status_code=404, detail="schedule not found")
+        require_workspace_role(user, current.get("workspace_id"), {"owner", "admin", "member"})
         schedule = repository.set_schedule_status(schedule_id, user["id"], "active")
         if not schedule:
             raise HTTPException(status_code=404, detail="schedule not found")
-        audit("schedule.resume", user_id=user["id"], resource_type="schedule", resource_id=schedule_id, request=request)
+        audit("schedule.resume", user_id=user["id"], workspace_id=current.get("workspace_id"), resource_type="schedule", resource_id=schedule_id, request=request)
         return schedule
 
     @app.post("/api/schedules/{schedule_id}/trigger", status_code=201)
     def trigger_schedule(schedule_id: int, request: Request, user: dict = Depends(current_user)) -> dict:
         enforce_rate_limit("mutation", request, settings.mutation_rate_limit, user)
+        current = repository.get_schedule_for_user(schedule_id, user["id"])
+        if not current:
+            raise HTTPException(status_code=404, detail="schedule not found")
+        require_workspace_role(user, current.get("workspace_id"), {"owner", "admin", "member"})
+        enforce_real_runner_budget(user, int(current.get("workspace_id") or repository.get_personal_workspace_id(user["id"])), request)
         execution = scheduler_service.execute_schedule(user["id"], schedule_id, run_inline=run_tasks_inline, triggered_by="manual")
         if not execution:
             raise HTTPException(status_code=404, detail="schedule not found")
         audit(
             "schedule.trigger",
             user_id=user["id"],
+            workspace_id=current.get("workspace_id"),
             resource_type="schedule",
             resource_id=schedule_id,
             metadata={"execution_id": execution["id"], "analysis_task_id": execution.get("analysis_task_id")},
@@ -453,13 +673,26 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
         return execution
 
     @app.post("/api/scheduler/run-due")
-    def run_due_schedules(payload: RunDueRequest, request: Request, user: dict = Depends(current_user)) -> dict:
+    def run_due_schedules(payload: RunDueRequest, request: Request, workspace_id: int | None = None, user: dict = Depends(current_user)) -> dict:
         enforce_rate_limit("mutation", request, settings.mutation_rate_limit, user)
+        if workspace_id is not None:
+            require_workspace_role(user, workspace_id, {"owner", "admin", "member"})
         now = format_iso_datetime(payload.now) if payload.now else None
-        executions = scheduler_service.run_due_for_user(user["id"], now=now, run_inline=run_tasks_inline)
+        executions = scheduler_service.run_due_for_user(
+            user["id"],
+            now=now,
+            run_inline=run_tasks_inline,
+            workspace_id=workspace_id,
+            before_execute=lambda schedule: enforce_real_runner_budget(
+                user,
+                int(schedule.get("workspace_id") or repository.get_personal_workspace_id(user["id"])),
+                request,
+            ),
+        )
         audit(
             "schedule.run_due",
             user_id=user["id"],
+            workspace_id=workspace_id,
             resource_type="schedule",
             metadata={"executed": len(executions), "execution_ids": [execution["id"] for execution in executions]},
             request=request,

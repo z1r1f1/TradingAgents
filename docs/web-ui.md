@@ -1,4 +1,4 @@
-# TradingAgents Web UI Phase 1
+# TradingAgents Web UI
 
 Phase 1 adds an authenticated FastAPI + SQLite backend and a React/Vite/TypeScript/Tailwind frontend for one-stock analysis.
 
@@ -15,9 +15,11 @@ Important environment variables:
 
 - `TRADINGAGENTS_WEB_DB`: SQLite path. Default: `~/.tradingagents/web.sqlite3`.
 - `TRADINGAGENTS_WEB_AUTH_SECRET`: reserved secret setting for future signed-token/session hardening.
-- `TRADINGAGENTS_WEB_RUNNER`: `demo` for deterministic local smoke tests; any other value uses the real `TradingAgentsGraph.propagate()` runner.
+- `TRADINGAGENTS_WEB_RUNNER`: `demo` for deterministic local smoke tests; any other value uses the real graph streaming runner.
 - `TRADINGAGENTS_WEB_ALLOW_REGISTRATION`: set `0` to disable self-registration.
 - `TRADINGAGENTS_WEB_CORS_ORIGINS`: comma-separated frontend origins.
+- `TRADINGAGENTS_WEB_REAL_RUNNER_USER_ANALYSIS_LIMIT`: optional local cap for real-runner analysis/continuation creation per user; `-1` disables it.
+- `TRADINGAGENTS_WEB_REAL_RUNNER_WORKSPACE_ANALYSIS_LIMIT`: optional local cap for real-runner analysis/continuation creation per workspace; `-1` disables it.
 
 ## Frontend setup and run
 
@@ -78,8 +80,7 @@ The web runner accepts an `emit(EventPayload)` callback. Each event is persisted
 
 - Demo runner is default for safe local smoke tests. Set `TRADINGAGENTS_WEB_RUNNER=real` to invoke the existing graph and external LLM/data dependencies.
 - Background task execution uses FastAPI background tasks, not Redis/Celery.
-- No production RBAC, OAuth, billing, team collaboration, external DB, object storage, broker integration, or scheduler is included.
-- Scheduler, per-agent memory selection, and mid-run human takeover are reserved as future extension points only.
+- No OAuth/SAML/SCIM, billing, external DB, object storage, broker integration, legal hold, or distributed scheduler is included.
 
 ## External-access authentication defaults
 
@@ -369,3 +370,71 @@ Run backups before upgrades and store them encrypted/off-host for internet-facin
 ### Reverse proxy and provider-cost guidance
 
 Terminate TLS at a reverse proxy such as Caddy, Nginx, Traefik, or a managed load balancer. Forward only the API path to Uvicorn, set exact CORS origins, use secure secret storage, and disable direct public access to the SQLite file and backup directory. Keep `TRADINGAGENTS_WEB_RUNNER=demo` until API keys, provider budgets, rate limits, monitoring, and manual review workflows are ready for real model/data-provider calls.
+
+## Phase 6 workspace RBAC, governance, and cost guardrails
+
+Phase 6 adds SQLite-backed workspaces and role checks while preserving the existing FastAPI/SQLite/React shape, the deterministic demo runner, and CLI behavior. Existing users are migrated idempotently into a personal workspace; new users receive a personal workspace during registration/provisioning.
+
+### Workspace schema and migration
+
+New tables:
+
+- `workspaces`: workspace name, `kind` (`personal` or `shared`), creator, and timestamps.
+- `workspace_members`: workspace/user membership with role and timestamps.
+
+New nullable `workspace_id` columns are added to `analysis_tasks`, `schedules`, `agent_memories`, `intervention_sessions`, and `audit_logs`. Startup backfills existing user-owned rows into each user's personal workspace only when `workspace_id` is missing. The migration never reassigns rows that already have an explicit workspace.
+
+### Role matrix
+
+| Role | Read workspace data | Create analysis/schedule/memory/intervention work | Update schedules/memories/interventions | Delete analyses/schedules/interventions | Manage members/export/audit |
+| --- | --- | --- | --- | --- | --- |
+| owner | yes | yes | yes | yes | yes |
+| admin | yes | yes | yes | yes | yes |
+| member | yes | yes | yes | no | audit/export read only |
+| viewer | yes | no | no | no | audit/export read only |
+
+The API prevents removing the final owner or demoting the final owner from a workspace.
+
+### Workspace-scoped API behavior
+
+Workspace-aware endpoints accept or infer `workspace_id`:
+
+- analyses/history: create, list, detail, rerun, delete, and SSE replay;
+- schedules: create, list, detail, update, pause/resume, trigger, delete, and `/api/scheduler/run-due?workspace_id=...`;
+- memories: list/detail/update/archive/unarchive and memory attachment validation;
+- interventions: list/detail/create/message/pause/resume/close/run/delete;
+- audit/export: `/api/governance/audit`, `/api/account/export?workspace_id=...`, and `/api/workspaces/{workspace_id}/export`;
+- workspace administration: `/api/workspaces`, `/api/workspaces/{id}`, and member add/update/remove routes.
+
+Unauthorized cross-workspace access returns `403` when the workspace is known but the role is insufficient, or `404` when the resource is not visible to the caller. List and export routes include only workspaces where the caller is a member.
+
+### Governance audit console
+
+The frontend workspace governance card includes:
+
+- workspace switcher and shared-workspace creation;
+- member provisioning, role changes, and removal controls for owner/admin users;
+- audit filters for workspace, user id, event type, start time, and end time;
+- a budget-status note so operators know real-runner caps are enforced server-side.
+
+Audit rows include `workspace_id` when an event is workspace-related. `cost.blocked` audit events are written before budget-denied real-runner analysis, scheduled trigger/due execution, or intervention continuation requests return `402`.
+
+### Real-runner budget guardrails
+
+These local caps are intentionally simple counters, not provider billing reconciliation:
+
+```bash
+export TRADINGAGENTS_WEB_RUNNER=real
+export TRADINGAGENTS_WEB_REAL_RUNNER_USER_ANALYSIS_LIMIT=100
+export TRADINGAGENTS_WEB_REAL_RUNNER_WORKSPACE_ANALYSIS_LIMIT=500
+```
+
+Set either cap to `-1` to disable it. When enabled, the API checks the cap before manual analysis, history rerun, schedule trigger/due execution, and intervention continuation. Blocked requests return `402` and append `cost.blocked` to `audit_logs` with the reason.
+
+### Backup hardening
+
+`python3 -m tradingagents.web.maintenance backup` now fails clearly if the source SQLite file is missing and verifies the copied database with `pragma integrity_check`. A non-`ok` result raises an error instead of silently accepting a corrupt backup.
+
+### Phase 6 production limits and Phase 7 follow-up
+
+Phase 6 remains a single-process SQLite deployment. It does not add SSO/OAuth/SAML, SCIM, billing APIs, Postgres, Redis, Celery, distributed locks, legal hold, or compliance certification. Recommended Phase 7 follow-up: organization invitations with email verification, stronger admin provisioning UX, multi-process-safe rate/budget counters, retention/legal-hold design, provider billing reconciliation, and a dedicated security review before broad enterprise rollout.

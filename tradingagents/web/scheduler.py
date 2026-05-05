@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import calendar
 from datetime import datetime, timedelta, timezone
+from collections.abc import Callable
 from typing import Any
 
 from .schemas import AnalysisCreate, ScheduledAnalysisCreate
@@ -64,10 +65,20 @@ class SchedulerService:
             return None
         return self._execute_schedule_row(user_id, schedule, run_inline=run_inline, triggered_by=triggered_by)
 
-    def run_due_for_user(self, user_id: int, *, now: str | None, run_inline: bool) -> list[dict[str, Any]]:
+    def run_due_for_user(
+        self,
+        user_id: int,
+        *,
+        now: str | None,
+        run_inline: bool,
+        workspace_id: int | None = None,
+        before_execute: Callable[[dict[str, Any]], None] | None = None,
+    ) -> list[dict[str, Any]]:
         now_value = format_iso_datetime(parse_iso_datetime(now)) if now else format_iso_datetime(datetime.now(timezone.utc))
         executions = []
-        for schedule in self.repository.list_due_schedules_for_user(user_id, now_value):
+        for schedule in self.repository.list_due_schedules_for_user(user_id, now_value, workspace_id=workspace_id):
+            if before_execute:
+                before_execute(schedule)
             execution = self._execute_schedule_row(user_id, schedule, run_inline=run_inline, triggered_by="due", now=now_value)
             executions.append(execution)
         return executions
@@ -102,6 +113,7 @@ class SchedulerService:
         run_dt = parse_iso_datetime(run_at)
         analysis_date = schedule.get("analysis_date") or run_dt.date().isoformat()
         return AnalysisCreate(
+            workspace_id=schedule.get("workspace_id"),
             ticker=schedule["ticker"],
             analysis_date=analysis_date,
             analysts=schedule["analysts"],

@@ -271,6 +271,6 @@ Please reference our work if you find *TradingAgents* provides you with some hel
 ```
 
 
-## Web UI (Phase 1)
+## Web UI (Phases 1-6)
 
-An authenticated FastAPI + SQLite backend and React/Vite frontend are documented in [`docs/web-ui.md`](docs/web-ui.md). For internet-facing deployments, read the Phase 5 production-hardening section before exposing the API: enable `TRADINGAGENTS_WEB_ENV=production`, disable open registration after provisioning a user, set exact CORS origins, use HTTPS/reverse proxy termination, configure rate limits, and run SQLite backups.
+An authenticated FastAPI + SQLite backend and React/Vite frontend are documented in [`docs/web-ui.md`](docs/web-ui.md). The web platform now includes progressive real-runner events, adjustable history reruns, scheduling, selected agent memories, intervention continuations, production hardening, and Phase 6 workspace RBAC/governance controls. For internet-facing deployments, read the Phase 5/6 hardening sections before exposing the API: enable `TRADINGAGENTS_WEB_ENV=production`, disable open registration after provisioning a user, set exact CORS origins, use HTTPS/reverse proxy termination, configure rate limits, run SQLite backups, define workspace roles deliberately, and configure real-runner budget caps (`TRADINGAGENTS_WEB_REAL_RUNNER_USER_ANALYSIS_LIMIT`, `TRADINGAGENTS_WEB_REAL_RUNNER_WORKSPACE_ANALYSIS_LIMIT`) before enabling `TRADINGAGENTS_WEB_RUNNER=real`.

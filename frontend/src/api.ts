@@ -1,4 +1,5 @@
 export type AnalysisParams = {
+  workspace_id?: number | null;
   ticker: string;
   analysis_date: string;
   analysts: string[];
@@ -13,6 +14,7 @@ export type AnalysisParams = {
 
 export type AnalysisTask = {
   id: number;
+  workspace_id?: number | null;
   status: string;
   ticker?: string;
   analysis_date?: string;
@@ -29,6 +31,7 @@ export type AgentEvent = { sequence: number; agent: string; event_type: string; 
 export type AgentMemory = {
   id: number;
   user_id: number;
+  workspace_id?: number | null;
   source_analysis_task_id: number;
   ticker: string;
   analysis_date: string;
@@ -65,6 +68,7 @@ export type InterventionOutput = { id: number; session_id: number; target_agent_
 export type InterventionSession = {
   id: number;
   user_id: number;
+  workspace_id?: number | null;
   source_analysis_task_id: number;
   target_agent_name: string;
   status: InterventionStatus;
@@ -90,10 +94,24 @@ export type ScheduleExecution = {
 export type AccountExport = {
   format: string;
   exported_at: string;
+  workspace?: Workspace | null;
   analyses: AnalysisTask[];
   memories: AgentMemory[];
   schedules: Schedule[];
   interventions: InterventionSession[];
+};
+
+export type WorkspaceRole = 'owner' | 'admin' | 'member' | 'viewer';
+export type WorkspaceMember = { workspace_id: number; user_id: number; email: string; role: WorkspaceRole; created_at: string; updated_at: string };
+export type Workspace = {
+  id: number;
+  name: string;
+  kind: 'personal' | 'shared';
+  role: WorkspaceRole;
+  created_by_user_id: number;
+  created_at: string;
+  updated_at: string;
+  members?: WorkspaceMember[];
 };
 
 const API_BASE = import.meta.env.VITE_TRADINGAGENTS_API ?? 'http://localhost:8000';
@@ -112,13 +130,20 @@ export const api = {
   login: (email: string, password: string) => request<{ access_token: string; user: { email: string } }>('/api/auth/login', null, { method: 'POST', body: JSON.stringify({ email, password }) }),
   register: (email: string, password: string) => request('/api/auth/register', null, { method: 'POST', body: JSON.stringify({ email, password }) }),
   logout: (token: string) => request('/api/auth/logout', token, { method: 'POST' }),
+  listWorkspaces: (token: string) => request<{ items: Workspace[] }>('/api/workspaces', token),
+  createWorkspace: (token: string, name: string) => request<Workspace>('/api/workspaces', token, { method: 'POST', body: JSON.stringify({ name }) }),
+  getWorkspace: (token: string, id: number) => request<Workspace>(`/api/workspaces/${id}`, token),
+  addWorkspaceMember: (token: string, id: number, email: string, role: WorkspaceRole) => request<WorkspaceMember>(`/api/workspaces/${id}/members`, token, { method: 'POST', body: JSON.stringify({ email, role }) }),
+  updateWorkspaceMember: (token: string, id: number, userId: number, role: WorkspaceRole) => request<WorkspaceMember>(`/api/workspaces/${id}/members/${userId}`, token, { method: 'PATCH', body: JSON.stringify({ role }) }),
+  removeWorkspaceMember: (token: string, id: number, userId: number) => request<void>(`/api/workspaces/${id}/members/${userId}`, token, { method: 'DELETE' }),
+  listGovernanceAudit: (token: string, params: Record<string, string> = {}) => request<{ items: unknown[] }>(`/api/governance/audit?${new URLSearchParams(params)}`, token),
   createAnalysis: (token: string, payload: AnalysisParams) => request<AnalysisTask>('/api/analyses', token, { method: 'POST', body: JSON.stringify(payload) }),
-  listAnalyses: (token: string) => request<{ items: AnalysisTask[] }>('/api/analyses', token),
+  listAnalyses: (token: string, params: Record<string, string> = {}) => request<{ items: AnalysisTask[] }>(`/api/analyses?${new URLSearchParams(params)}`, token),
   getAnalysis: (token: string, id: number) => request<AnalysisTask>(`/api/analyses/${id}`, token),
   rerun: (token: string, id: number, overrides: Partial<AnalysisParams>) => request<AnalysisTask>(`/api/analyses/${id}/rerun`, token, { method: 'POST', body: JSON.stringify(overrides) }),
   deleteAnalysis: (token: string, id: number) => request<void>(`/api/analyses/${id}`, token, { method: 'DELETE' }),
   exportAccount: (token: string) => request<AccountExport>('/api/account/export', token),
-  listSchedules: (token: string) => request<{ items: Schedule[] }>('/api/schedules', token),
+  listSchedules: (token: string, params: Record<string, string> = {}) => request<{ items: Schedule[] }>(`/api/schedules?${new URLSearchParams(params)}`, token),
   getSchedule: (token: string, id: number) => request<Schedule>(`/api/schedules/${id}`, token),
   createSchedule: (token: string, payload: SchedulePayload) => request<Schedule>('/api/schedules', token, { method: 'POST', body: JSON.stringify(payload) }),
   updateSchedule: (token: string, id: number, payload: Partial<SchedulePayload>) => request<Schedule>(`/api/schedules/${id}`, token, { method: 'PATCH', body: JSON.stringify(payload) }),
@@ -130,7 +155,7 @@ export const api = {
   getMemory: (token: string, id: number) => request<AgentMemory>(`/api/memories/${id}`, token),
   archiveMemory: (token: string, id: number) => request<AgentMemory>(`/api/memories/${id}/archive`, token, { method: 'POST' }),
   unarchiveMemory: (token: string, id: number) => request<AgentMemory>(`/api/memories/${id}/unarchive`, token, { method: 'POST' }),
-  listInterventions: (token: string) => request<{ items: InterventionSession[] }>('/api/interventions', token),
+  listInterventions: (token: string, params: Record<string, string> = {}) => request<{ items: InterventionSession[] }>(`/api/interventions?${new URLSearchParams(params)}`, token),
   getIntervention: (token: string, id: number) => request<InterventionSession>(`/api/interventions/${id}`, token),
   createIntervention: (token: string, sourceTaskId: number, targetAgentName: string) => request<InterventionSession>('/api/interventions', token, { method: 'POST', body: JSON.stringify({ source_analysis_task_id: sourceTaskId, target_agent_name: targetAgentName }) }),
   appendInterventionMessage: (token: string, id: number, content: string) => request<InterventionMessage>(`/api/interventions/${id}/messages`, token, { method: 'POST', body: JSON.stringify({ content }) }),

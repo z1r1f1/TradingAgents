@@ -26,6 +26,8 @@ class WebSettings:
     mutation_rate_limit: int = int(os.getenv("TRADINGAGENTS_WEB_MUTATION_RATE_LIMIT", "60"))
     analysis_rate_limit: int = int(os.getenv("TRADINGAGENTS_WEB_ANALYSIS_RATE_LIMIT", "10"))
     intervention_rate_limit: int = int(os.getenv("TRADINGAGENTS_WEB_INTERVENTION_RATE_LIMIT", "20"))
+    real_runner_user_analysis_limit: int = int(os.getenv("TRADINGAGENTS_WEB_REAL_RUNNER_USER_ANALYSIS_LIMIT", "-1"))
+    real_runner_workspace_analysis_limit: int = int(os.getenv("TRADINGAGENTS_WEB_REAL_RUNNER_WORKSPACE_ANALYSIS_LIMIT", "-1"))
 
     @property
     def is_production(self) -> bool:

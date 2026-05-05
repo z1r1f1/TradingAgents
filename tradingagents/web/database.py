@@ -32,6 +32,22 @@ class WebRepository:
                     password_hash text not null,
                     created_at text not null
                 );
+                create table if not exists workspaces (
+                    id integer primary key autoincrement,
+                    name text not null,
+                    kind text not null,
+                    created_by_user_id integer not null references users(id) on delete cascade,
+                    created_at text not null,
+                    updated_at text not null
+                );
+                create table if not exists workspace_members (
+                    workspace_id integer not null references workspaces(id) on delete cascade,
+                    user_id integer not null references users(id) on delete cascade,
+                    role text not null,
+                    created_at text not null,
+                    updated_at text not null,
+                    primary key (workspace_id, user_id)
+                );
                 create table if not exists schema_migrations (
                     version text primary key,
                     applied_at text not null
@@ -44,6 +60,7 @@ class WebRepository:
                     resource_id text,
                     metadata_json text not null,
                     ip_address text,
+                    workspace_id integer references workspaces(id) on delete set null,
                     created_at text not null
                 );
                 create table if not exists sessions (
@@ -57,6 +74,7 @@ class WebRepository:
                 create table if not exists analysis_tasks (
                     id integer primary key autoincrement,
                     user_id integer not null references users(id) on delete cascade,
+                    workspace_id integer references workspaces(id) on delete cascade,
                     status text not null,
                     created_at text not null,
                     updated_at text not null,
@@ -112,6 +130,7 @@ class WebRepository:
                 create table if not exists schedules (
                     id integer primary key autoincrement,
                     user_id integer not null references users(id) on delete cascade,
+                    workspace_id integer references workspaces(id) on delete cascade,
                     name text not null,
                     status text not null,
                     ticker text not null,
@@ -148,6 +167,7 @@ class WebRepository:
                 create table if not exists agent_memories (
                     id integer primary key autoincrement,
                     user_id integer not null references users(id) on delete cascade,
+                    workspace_id integer references workspaces(id) on delete cascade,
                     source_analysis_task_id integer not null references analysis_tasks(id) on delete cascade,
                     ticker text not null,
                     analysis_date text not null,
@@ -173,6 +193,7 @@ class WebRepository:
                 create table if not exists intervention_sessions (
                     id integer primary key autoincrement,
                     user_id integer not null references users(id) on delete cascade,
+                    workspace_id integer references workspaces(id) on delete cascade,
                     source_analysis_task_id integer not null references analysis_tasks(id) on delete cascade,
                     target_agent_name text not null,
                     status text not null,
@@ -209,10 +230,62 @@ class WebRepository:
                 );
                 """
             )
+            self._ensure_workspace_columns(conn)
+            self._ensure_personal_workspaces(conn)
             conn.execute(
                 "insert or ignore into schema_migrations(version, applied_at) values (?, ?)",
                 ("phase5-production-hardening", utcnow()),
             )
+            conn.execute(
+                "insert or ignore into schema_migrations(version, applied_at) values (?, ?)",
+                ("phase6-workspace-rbac-governance", utcnow()),
+            )
+
+    def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+        columns = {row["name"] for row in conn.execute(f"pragma table_info({table})").fetchall()}
+        if column not in columns:
+            conn.execute(f"alter table {table} add column {column} {definition}")
+
+    def _ensure_workspace_columns(self, conn: sqlite3.Connection) -> None:
+        self._ensure_column(conn, "analysis_tasks", "workspace_id", "integer references workspaces(id) on delete cascade")
+        self._ensure_column(conn, "schedules", "workspace_id", "integer references workspaces(id) on delete cascade")
+        self._ensure_column(conn, "agent_memories", "workspace_id", "integer references workspaces(id) on delete cascade")
+        self._ensure_column(conn, "intervention_sessions", "workspace_id", "integer references workspaces(id) on delete cascade")
+        self._ensure_column(conn, "audit_logs", "workspace_id", "integer references workspaces(id) on delete set null")
+
+    def _ensure_personal_workspace_for_user(self, conn: sqlite3.Connection, user_id: int, email: str) -> int:
+        row = conn.execute(
+            """
+            select w.id from workspaces w
+            join workspace_members wm on wm.workspace_id = w.id
+            where wm.user_id = ? and w.kind = 'personal'
+            order by w.id limit 1
+            """,
+            (user_id,),
+        ).fetchone()
+        if row:
+            return int(row["id"])
+        now = utcnow()
+        cur = conn.execute(
+            "insert into workspaces(name, kind, created_by_user_id, created_at, updated_at) values (?, 'personal', ?, ?, ?)",
+            (f"{email} personal", user_id, now, now),
+        )
+        workspace_id = int(cur.lastrowid)
+        conn.execute(
+            "insert into workspace_members(workspace_id, user_id, role, created_at, updated_at) values (?, ?, 'owner', ?, ?)",
+            (workspace_id, user_id, now, now),
+        )
+        return workspace_id
+
+    def _ensure_personal_workspaces(self, conn: sqlite3.Connection) -> None:
+        users = conn.execute("select id, email from users").fetchall()
+        for user in users:
+            workspace_id = self._ensure_personal_workspace_for_user(conn, int(user["id"]), user["email"])
+            for table in ("analysis_tasks", "schedules", "agent_memories", "intervention_sessions", "audit_logs"):
+                conn.execute(
+                    f"update {table} set workspace_id = ? where user_id = ? and workspace_id is null",
+                    (workspace_id, int(user["id"])),
+                )
 
     def create_user(self, email: str, password: str) -> dict[str, Any]:
         now = utcnow()
@@ -221,7 +294,9 @@ class WebRepository:
                 "insert into users(email, password_hash, created_at) values (?, ?, ?)",
                 (email, hash_password(password), now),
             )
-            return {"id": cur.lastrowid, "email": email, "created_at": now}
+            user_id = int(cur.lastrowid)
+            self._ensure_personal_workspace_for_user(conn, user_id, email)
+            return {"id": user_id, "email": email, "created_at": now}
 
     def get_user_by_email(self, email: str) -> sqlite3.Row | None:
         with self.connect() as conn:
@@ -265,6 +340,149 @@ class WebRepository:
         with self.connect() as conn:
             conn.execute("delete from sessions where token_hash = ?", (token_hash(token),))
 
+    def get_personal_workspace_id(self, user_id: int) -> int:
+        with self.connect() as conn:
+            user = conn.execute("select id, email from users where id = ?", (user_id,)).fetchone()
+            if not user:
+                raise ValueError("user not found")
+            return self._ensure_personal_workspace_for_user(conn, int(user["id"]), user["email"])
+
+    def resolve_workspace_id(self, user_id: int, workspace_id: int | None = None) -> int:
+        resolved = int(workspace_id) if workspace_id is not None else self.get_personal_workspace_id(user_id)
+        if not self.get_workspace_role(user_id, resolved):
+            raise PermissionError("workspace not found")
+        return resolved
+
+    def list_workspaces_for_user(self, user_id: int) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select w.*, wm.role
+                from workspaces w join workspace_members wm on wm.workspace_id = w.id
+                where wm.user_id = ?
+                order by w.kind = 'personal' desc, w.created_at asc, w.id asc
+                """,
+                (user_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_workspace_for_user(self, workspace_id: int, user_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                select w.*, wm.role
+                from workspaces w join workspace_members wm on wm.workspace_id = w.id
+                where w.id = ? and wm.user_id = ?
+                """,
+                (workspace_id, user_id),
+            ).fetchone()
+            if not row:
+                return None
+            workspace = dict(row)
+            members = conn.execute(
+                """
+                select wm.workspace_id, wm.user_id, wm.role, wm.created_at, wm.updated_at, u.email
+                from workspace_members wm join users u on u.id = wm.user_id
+                where wm.workspace_id = ?
+                order by wm.role = 'owner' desc, u.email asc
+                """,
+                (workspace_id,),
+            ).fetchall()
+            workspace["members"] = [dict(member) for member in members]
+            return workspace
+
+    def get_workspace_role(self, user_id: int, workspace_id: int) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "select role from workspace_members where workspace_id = ? and user_id = ?",
+                (workspace_id, user_id),
+            ).fetchone()
+        return str(row["role"]) if row else None
+
+    def create_workspace(self, user_id: int, name: str) -> dict[str, Any]:
+        now = utcnow()
+        with self.connect() as conn:
+            cur = conn.execute(
+                "insert into workspaces(name, kind, created_by_user_id, created_at, updated_at) values (?, 'shared', ?, ?, ?)",
+                (name, user_id, now, now),
+            )
+            workspace_id = int(cur.lastrowid)
+            conn.execute(
+                "insert into workspace_members(workspace_id, user_id, role, created_at, updated_at) values (?, ?, 'owner', ?, ?)",
+                (workspace_id, user_id, now, now),
+            )
+        return self.get_workspace_for_user(workspace_id, user_id)  # type: ignore[return-value]
+
+    def add_workspace_member(self, workspace_id: int, email: str, role: str) -> dict[str, Any] | None:
+        user = self.get_user_by_email(email)
+        if not user:
+            return None
+        now = utcnow()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                insert into workspace_members(workspace_id, user_id, role, created_at, updated_at)
+                values (?, ?, ?, ?, ?)
+                on conflict(workspace_id, user_id) do update set role = excluded.role, updated_at = excluded.updated_at
+                """,
+                (workspace_id, int(user["id"]), role, now, now),
+            )
+            row = conn.execute(
+                """
+                select wm.workspace_id, wm.user_id, wm.role, wm.created_at, wm.updated_at, u.email
+                from workspace_members wm join users u on u.id = wm.user_id
+                where wm.workspace_id = ? and wm.user_id = ?
+                """,
+                (workspace_id, int(user["id"])),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def update_workspace_member_role(self, workspace_id: int, user_id: int, role: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            current = conn.execute(
+                "select role from workspace_members where workspace_id = ? and user_id = ?",
+                (workspace_id, user_id),
+            ).fetchone()
+            if not current:
+                return None
+            if current["role"] == "owner" and role != "owner":
+                owner_count = conn.execute(
+                    "select count(*) from workspace_members where workspace_id = ? and role = 'owner'",
+                    (workspace_id,),
+                ).fetchone()[0]
+                if int(owner_count) <= 1:
+                    raise ValueError("workspace must retain at least one owner")
+            cur = conn.execute(
+                "update workspace_members set role = ?, updated_at = ? where workspace_id = ? and user_id = ?",
+                (role, utcnow(), workspace_id, user_id),
+            )
+            if cur.rowcount == 0:
+                return None
+            row = conn.execute(
+                """
+                select wm.workspace_id, wm.user_id, wm.role, wm.created_at, wm.updated_at, u.email
+                from workspace_members wm join users u on u.id = wm.user_id
+                where wm.workspace_id = ? and wm.user_id = ?
+                """,
+                (workspace_id, user_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def remove_workspace_member(self, workspace_id: int, user_id: int) -> bool:
+        with self.connect() as conn:
+            owner_count = conn.execute(
+                "select count(*) from workspace_members where workspace_id = ? and role = 'owner'",
+                (workspace_id,),
+            ).fetchone()[0]
+            current = conn.execute(
+                "select role from workspace_members where workspace_id = ? and user_id = ?",
+                (workspace_id, user_id),
+            ).fetchone()
+            if current and current["role"] == "owner" and int(owner_count) <= 1:
+                return False
+            cur = conn.execute("delete from workspace_members where workspace_id = ? and user_id = ?", (workspace_id, user_id))
+            return cur.rowcount > 0
+
     def append_audit_log(
         self,
         event_type: str,
@@ -272,6 +490,7 @@ class WebRepository:
         user_id: int | None = None,
         resource_type: str | None = None,
         resource_id: int | str | None = None,
+        workspace_id: int | None = None,
         metadata: dict[str, Any] | None = None,
         ip_address: str | None = None,
     ) -> dict[str, Any]:
@@ -279,8 +498,8 @@ class WebRepository:
         with self.connect() as conn:
             cur = conn.execute(
                 """
-                insert into audit_logs(user_id, event_type, resource_type, resource_id, metadata_json, ip_address, created_at)
-                values (?, ?, ?, ?, ?, ?, ?)
+                insert into audit_logs(user_id, event_type, resource_type, resource_id, metadata_json, ip_address, workspace_id, created_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_id,
@@ -289,17 +508,44 @@ class WebRepository:
                     str(resource_id) if resource_id is not None else None,
                     json.dumps(metadata or {}),
                     ip_address,
+                    workspace_id,
                     created_at,
                 ),
             )
             row = conn.execute("select * from audit_logs where id = ?", (cur.lastrowid,)).fetchone()
         return self._audit_log_dict(row)
 
-    def list_audit_logs_for_user(self, user_id: int) -> list[dict[str, Any]]:
+    def list_audit_logs_for_user(
+        self,
+        user_id: int,
+        *,
+        workspace_id: int | None = None,
+        event_type: str | None = None,
+        target_user_id: int | None = None,
+        start_at: str | None = None,
+        end_at: str | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses = ["(user_id = ? or workspace_id in (select workspace_id from workspace_members where user_id = ?))"]
+        values: list[Any] = [user_id, user_id]
+        if workspace_id is not None:
+            clauses.append("workspace_id = ?")
+            values.append(workspace_id)
+        if event_type:
+            clauses.append("event_type = ?")
+            values.append(event_type)
+        if target_user_id is not None:
+            clauses.append("user_id = ?")
+            values.append(target_user_id)
+        if start_at:
+            clauses.append("created_at >= ?")
+            values.append(start_at)
+        if end_at:
+            clauses.append("created_at <= ?")
+            values.append(end_at)
         with self.connect() as conn:
             rows = conn.execute(
-                "select * from audit_logs where user_id = ? order by created_at desc, id desc",
-                (user_id,),
+                f"select * from audit_logs where {' and '.join(clauses)} order by created_at desc, id desc",
+                tuple(values),
             ).fetchall()
         return [self._audit_log_dict(row) for row in rows]
 
@@ -308,10 +554,12 @@ class WebRepository:
             params = AnalysisCreate(**params)
         now = utcnow()
         payload = params.parameter_payload()
+        workspace_id = self.resolve_workspace_id(user_id, payload.get("workspace_id"))
+        payload["workspace_id"] = workspace_id
         with self.connect() as conn:
             cur = conn.execute(
-                "insert into analysis_tasks(user_id, status, created_at, updated_at) values (?, 'queued', ?, ?)",
-                (user_id, now, now),
+                "insert into analysis_tasks(user_id, workspace_id, status, created_at, updated_at) values (?, ?, 'queued', ?, ?)",
+                (user_id, workspace_id, now, now),
             )
             task_id = cur.lastrowid
             conn.execute(
@@ -339,7 +587,7 @@ class WebRepository:
                     json.dumps(payload),
                 ),
             )
-            for memory_id in self._validate_memory_ids(conn, user_id, payload.get("memory_ids", [])):
+            for memory_id in self._validate_memory_ids(conn, user_id, payload.get("memory_ids", []), workspace_id):
                 conn.execute(
                     "insert into analysis_memory_attachments(analysis_task_id, memory_id, created_at) values (?, ?, ?)",
                     (task_id, memory_id, now),
@@ -351,6 +599,24 @@ class WebRepository:
         with self.connect() as conn:
             row = conn.execute("select user_id from analysis_tasks where id = ?", (task_id,)).fetchone()
             return int(row["user_id"]) if row else None
+
+    def get_task_workspace_id(self, task_id: int) -> int | None:
+        with self.connect() as conn:
+            row = conn.execute("select workspace_id from analysis_tasks where id = ?", (task_id,)).fetchone()
+            return int(row["workspace_id"]) if row and row["workspace_id"] is not None else None
+
+    def count_analysis_tasks(self, *, user_id: int | None = None, workspace_id: int | None = None) -> int:
+        clauses: list[str] = []
+        values: list[Any] = []
+        if user_id is not None:
+            clauses.append("user_id = ?")
+            values.append(user_id)
+        if workspace_id is not None:
+            clauses.append("workspace_id = ?")
+            values.append(workspace_id)
+        where = f"where {' and '.join(clauses)}" if clauses else ""
+        with self.connect() as conn:
+            return int(conn.execute(f"select count(*) from analysis_tasks {where}", tuple(values)).fetchone()[0])
 
     def update_task_status(self, task_id: int, status: str, error: str | None = None) -> None:
         completed_at = utcnow() if status in {"completed", "failed"} else None
@@ -401,37 +667,53 @@ class WebRepository:
                 ),
             )
 
-    def list_tasks_for_user(self, user_id: int) -> list[dict[str, Any]]:
+    def list_tasks_for_user(self, user_id: int, workspace_id: int | None = None) -> list[dict[str, Any]]:
+        clauses = ["(t.user_id = ? or exists (select 1 from workspace_members wm where wm.workspace_id = t.workspace_id and wm.user_id = ?))"]
+        values: list[Any] = [user_id, user_id]
+        if workspace_id is not None:
+            clauses.append("t.workspace_id = ?")
+            values.append(workspace_id)
         with self.connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 select t.*, p.ticker, p.analysis_date, fd.decision
                 from analysis_tasks t
                 join task_parameters p on p.task_id = t.id
                 left join final_decisions fd on fd.task_id = t.id
-                where t.user_id = ?
+                where {' and '.join(clauses)}
                 order by t.created_at desc, t.id desc
                 """,
-                (user_id,),
+                tuple(values),
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def export_user_data(self, user_id: int) -> dict[str, Any]:
-        analyses = [self.get_task_for_user(task["id"], user_id) for task in self.list_tasks_for_user(user_id)]
-        interventions = [self.get_intervention_for_user(session["id"], user_id) for session in self.list_interventions_for_user(user_id)]
-        schedules = [self.get_schedule_for_user(schedule["id"], user_id) for schedule in self.list_schedules_for_user(user_id)]
+    def export_user_data(self, user_id: int, workspace_id: int | None = None) -> dict[str, Any]:
+        analyses = [self.get_task_for_user(task["id"], user_id) for task in self.list_tasks_for_user(user_id, workspace_id)]
+        interventions = [self.get_intervention_for_user(session["id"], user_id) for session in self.list_interventions_for_user(user_id, workspace_id)]
+        schedules = [self.get_schedule_for_user(schedule["id"], user_id) for schedule in self.list_schedules_for_user(user_id, workspace_id)]
+        workspace = self.get_workspace_for_user(workspace_id, user_id) if workspace_id is not None else None
         return {
             "format": "tradingagents.web.export.v1",
             "exported_at": utcnow(),
+            "workspace": workspace,
             "analyses": [item for item in analyses if item],
-            "memories": self.list_memories_for_user(user_id, archived=None),
+            "memories": self.list_memories_for_user(user_id, archived=None, workspace_id=workspace_id),
             "schedules": [item for item in schedules if item],
             "interventions": [item for item in interventions if item],
         }
 
     def get_task_for_user(self, task_id: int, user_id: int, *, include_detail: bool = True) -> dict[str, Any] | None:
         with self.connect() as conn:
-            task = conn.execute("select * from analysis_tasks where id = ? and user_id = ?", (task_id, user_id)).fetchone()
+            task = conn.execute(
+                """
+                select * from analysis_tasks t
+                where t.id = ? and (
+                    t.user_id = ?
+                    or exists (select 1 from workspace_members wm where wm.workspace_id = t.workspace_id and wm.user_id = ?)
+                )
+                """,
+                (task_id, user_id, user_id),
+            ).fetchone()
             if not task:
                 return None
             params = conn.execute("select * from task_parameters where task_id = ?", (task_id,)).fetchone()
@@ -452,25 +734,36 @@ class WebRepository:
 
     def delete_task_for_user(self, task_id: int, user_id: int) -> bool:
         with self.connect() as conn:
-            cur = conn.execute("delete from analysis_tasks where id = ? and user_id = ?", (task_id, user_id))
+            cur = conn.execute(
+                """
+                delete from analysis_tasks
+                where id = ? and (
+                    user_id = ?
+                    or workspace_id in (select workspace_id from workspace_members where user_id = ? and role in ('owner', 'admin'))
+                )
+                """,
+                (task_id, user_id, user_id),
+            )
             return cur.rowcount > 0
 
 
     def create_schedule(self, user_id: int, payload: ScheduledAnalysisCreate) -> dict[str, Any]:
         now = utcnow()
         start_at = self._format_datetime(payload.start_at)
+        workspace_id = self.resolve_workspace_id(user_id, payload.workspace_id)
         with self.connect() as conn:
             cur = conn.execute(
                 """
                 insert into schedules(
-                    user_id, name, status, ticker, start_at, next_run_at, interval, analysts_json,
+                    user_id, workspace_id, name, status, ticker, start_at, next_run_at, interval, analysts_json,
                     research_depth, llm_provider, backend_url, quick_model, deep_model, output_language,
                     analysis_date, analysis_date_policy, google_thinking_level, openai_reasoning_effort,
                     anthropic_effort, created_at, updated_at
-                ) values (?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) values (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_id,
+                    workspace_id,
                     payload.name,
                     payload.ticker,
                     start_at,
@@ -496,19 +789,29 @@ class WebRepository:
         self.replace_schedule_memory_attachments(schedule_id, user_id, payload.memory_ids)
         return self.get_schedule_for_user(schedule_id, user_id)  # type: ignore[return-value]
 
-    def list_schedules_for_user(self, user_id: int) -> list[dict[str, Any]]:
+    def list_schedules_for_user(self, user_id: int, workspace_id: int | None = None) -> list[dict[str, Any]]:
+        clauses = ["deleted_at is null", "(user_id = ? or workspace_id in (select workspace_id from workspace_members where user_id = ?))"]
+        values: list[Any] = [user_id, user_id]
+        if workspace_id is not None:
+            clauses.append("workspace_id = ?")
+            values.append(workspace_id)
         with self.connect() as conn:
             rows = conn.execute(
-                "select * from schedules where user_id = ? and deleted_at is null order by created_at desc, id desc",
-                (user_id,),
+                f"select * from schedules where {' and '.join(clauses)} order by created_at desc, id desc",
+                tuple(values),
             ).fetchall()
         return [self._schedule_dict(row) for row in rows]
 
     def get_schedule_for_user(self, schedule_id: int, user_id: int) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute(
-                "select * from schedules where id = ? and user_id = ? and deleted_at is null",
-                (schedule_id, user_id),
+                """
+                select * from schedules
+                where id = ? and deleted_at is null and (
+                    user_id = ? or workspace_id in (select workspace_id from workspace_members where user_id = ?)
+                )
+                """,
+                (schedule_id, user_id, user_id),
             ).fetchone()
             if not row:
                 return None
@@ -530,7 +833,7 @@ class WebRepository:
         fields = []
         values: list[Any] = []
         for key, value in updates.items():
-            if key == "memory_ids":
+            if key in {"memory_ids", "workspace_id"}:
                 continue
             db_key = key
             if key == "analysts":
@@ -546,10 +849,15 @@ class WebRepository:
             values.append(value)
         fields.append("updated_at = ?")
         values.append(utcnow())
-        values.extend([schedule_id, user_id])
+        values.extend([schedule_id, user_id, user_id])
         with self.connect() as conn:
             conn.execute(
-                f"update schedules set {', '.join(fields)} where id = ? and user_id = ? and deleted_at is null",
+                f"""
+                update schedules set {', '.join(fields)}
+                where id = ? and deleted_at is null and (
+                    user_id = ? or workspace_id in (select workspace_id from workspace_members where user_id = ? and role in ('owner', 'admin', 'member'))
+                )
+                """,
                 tuple(values),
             )
         if payload.memory_ids is not None:
@@ -559,28 +867,48 @@ class WebRepository:
     def set_schedule_status(self, schedule_id: int, user_id: int, status: str) -> dict[str, Any] | None:
         with self.connect() as conn:
             conn.execute(
-                "update schedules set status = ?, updated_at = ? where id = ? and user_id = ? and deleted_at is null",
-                (status, utcnow(), schedule_id, user_id),
+                """
+                update schedules set status = ?, updated_at = ?
+                where id = ? and deleted_at is null and (
+                    user_id = ? or workspace_id in (select workspace_id from workspace_members where user_id = ? and role in ('owner', 'admin', 'member'))
+                )
+                """,
+                (status, utcnow(), schedule_id, user_id, user_id),
             )
         return self.get_schedule_for_user(schedule_id, user_id)
 
     def delete_schedule(self, schedule_id: int, user_id: int) -> bool:
         with self.connect() as conn:
             cur = conn.execute(
-                "update schedules set deleted_at = ?, updated_at = ? where id = ? and user_id = ? and deleted_at is null",
-                (utcnow(), utcnow(), schedule_id, user_id),
+                """
+                update schedules set deleted_at = ?, updated_at = ?
+                where id = ? and deleted_at is null and (
+                    user_id = ? or workspace_id in (select workspace_id from workspace_members where user_id = ? and role in ('owner', 'admin'))
+                )
+                """,
+                (utcnow(), utcnow(), schedule_id, user_id, user_id),
             )
             return cur.rowcount > 0
 
-    def list_due_schedules_for_user(self, user_id: int, now: str) -> list[dict[str, Any]]:
+    def list_due_schedules_for_user(self, user_id: int, now: str, workspace_id: int | None = None) -> list[dict[str, Any]]:
+        clauses = [
+            "(user_id = ? or workspace_id in (select workspace_id from workspace_members where user_id = ? and role in ('owner', 'admin', 'member')))",
+            "status = 'active'",
+            "deleted_at is null",
+            "next_run_at <= ?",
+        ]
+        values: list[Any] = [user_id, user_id, now]
+        if workspace_id is not None:
+            clauses.append("workspace_id = ?")
+            values.append(workspace_id)
         with self.connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 select * from schedules
-                where user_id = ? and status = 'active' and deleted_at is null and next_run_at <= ?
+                where {' and '.join(clauses)}
                 order by next_run_at asc, id asc
                 """,
-                (user_id, now),
+                tuple(values),
             ).fetchall()
         return [self._schedule_dict(row) for row in rows]
 
@@ -631,14 +959,18 @@ class WebRepository:
         return value.astimezone(timezone.utc).replace(microsecond=0).isoformat()
 
 
-    def _validate_memory_ids(self, conn: sqlite3.Connection, user_id: int, memory_ids: list[int]) -> list[int]:
+    def _validate_memory_ids(self, conn: sqlite3.Connection, user_id: int, memory_ids: list[int], workspace_id: int) -> list[int]:
         if not memory_ids:
             return []
         unique_ids = list(dict.fromkeys(int(memory_id) for memory_id in memory_ids))
         placeholders = ",".join("?" for _ in unique_ids)
         rows = conn.execute(
-            f"select id from agent_memories where user_id = ? and archived = 0 and id in ({placeholders})",
-            (user_id, *unique_ids),
+            f"""
+            select id from agent_memories
+            where archived = 0 and workspace_id = ? and id in ({placeholders})
+              and (user_id = ? or workspace_id in (select workspace_id from workspace_members where user_id = ?))
+            """,
+            (workspace_id, *unique_ids, user_id, user_id),
         ).fetchall()
         found = {row["id"] for row in rows}
         if found != set(unique_ids):
@@ -663,6 +995,7 @@ class WebRepository:
         }
         ticker = params["ticker"]
         analysis_date = params["analysis_date"]
+        workspace_id = int(params.get("workspace_id") or self.get_personal_workspace_id(user_id))
         with self.connect() as conn:
             for section, agent_name in section_agents.items():
                 content = (sections.get(section) or "").strip()
@@ -671,11 +1004,12 @@ class WebRepository:
                 conn.execute(
                     """
                     insert into agent_memories(
-                        user_id, source_analysis_task_id, ticker, analysis_date, agent_name, title, content, tags_json, archived, created_at
-                    ) values (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+                        user_id, workspace_id, source_analysis_task_id, ticker, analysis_date, agent_name, title, content, tags_json, archived, created_at
+                    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
                     """,
                     (
                         user_id,
+                        workspace_id,
                         task_id,
                         ticker,
                         analysis_date,
@@ -696,9 +1030,13 @@ class WebRepository:
         analysis_date: str | None = None,
         query: str | None = None,
         archived: bool | None = False,
+        workspace_id: int | None = None,
     ) -> list[dict[str, Any]]:
-        clauses = ["user_id = ?"]
-        values: list[Any] = [user_id]
+        clauses = ["(user_id = ? or workspace_id in (select workspace_id from workspace_members where user_id = ?))"]
+        values: list[Any] = [user_id, user_id]
+        if workspace_id is not None:
+            clauses.append("workspace_id = ?")
+            values.append(workspace_id)
         if ticker:
             clauses.append("ticker = ?")
             values.append(ticker.upper())
@@ -724,7 +1062,13 @@ class WebRepository:
 
     def get_memory_for_user(self, memory_id: int, user_id: int) -> dict[str, Any] | None:
         with self.connect() as conn:
-            row = conn.execute("select * from agent_memories where id = ? and user_id = ?", (memory_id, user_id)).fetchone()
+            row = conn.execute(
+                """
+                select * from agent_memories
+                where id = ? and (user_id = ? or workspace_id in (select workspace_id from workspace_members where user_id = ?))
+                """,
+                (memory_id, user_id, user_id),
+            ).fetchone()
             return self._memory_dict(row) if row else None
 
     def update_memory(self, memory_id: int, user_id: int, payload: MemoryUpdate) -> dict[str, Any] | None:
@@ -742,16 +1086,25 @@ class WebRepository:
         if "tags" in updates:
             fields.append("tags_json = ?")
             values.append(json.dumps(updates["tags"] or {}))
-        values.extend([memory_id, user_id])
+        values.extend([memory_id, user_id, user_id])
         with self.connect() as conn:
-            conn.execute(f"update agent_memories set {', '.join(fields)} where id = ? and user_id = ?", tuple(values))
+            conn.execute(
+                f"""
+                update agent_memories set {', '.join(fields)}
+                where id = ? and (user_id = ? or workspace_id in (select workspace_id from workspace_members where user_id = ? and role in ('owner', 'admin', 'member')))
+                """,
+                tuple(values),
+            )
         return self.get_memory_for_user(memory_id, user_id)
 
     def set_memory_archived(self, memory_id: int, user_id: int, archived: bool) -> dict[str, Any] | None:
         with self.connect() as conn:
             conn.execute(
-                "update agent_memories set archived = ? where id = ? and user_id = ?",
-                (1 if archived else 0, memory_id, user_id),
+                """
+                update agent_memories set archived = ?
+                where id = ? and (user_id = ? or workspace_id in (select workspace_id from workspace_members where user_id = ? and role in ('owner', 'admin', 'member')))
+                """,
+                (1 if archived else 0, memory_id, user_id, user_id),
             )
         return self.get_memory_for_user(memory_id, user_id)
 
@@ -785,7 +1138,9 @@ class WebRepository:
         if memory_ids is None:
             return
         with self.connect() as conn:
-            valid_ids = self._validate_memory_ids(conn, user_id, memory_ids)
+            schedule = conn.execute("select workspace_id from schedules where id = ?", (schedule_id,)).fetchone()
+            workspace_id = int(schedule["workspace_id"]) if schedule and schedule["workspace_id"] is not None else self.get_personal_workspace_id(user_id)
+            valid_ids = self._validate_memory_ids(conn, user_id, memory_ids, workspace_id)
             conn.execute("delete from schedule_memory_attachments where schedule_id = ?", (schedule_id,))
             for memory_id in valid_ids:
                 conn.execute(
@@ -809,24 +1164,31 @@ class WebRepository:
 
 
     def create_intervention_session(self, user_id: int, source_analysis_task_id: int, target_agent_name: str) -> dict[str, Any] | None:
-        if not self.get_task_for_user(source_analysis_task_id, user_id, include_detail=False):
+        task = self.get_task_for_user(source_analysis_task_id, user_id, include_detail=False)
+        if not task:
             return None
+        workspace_id = int(task["workspace_id"] or self.get_personal_workspace_id(user_id))
         now = utcnow()
         with self.connect() as conn:
             cur = conn.execute(
                 """
-                insert into intervention_sessions(user_id, source_analysis_task_id, target_agent_name, status, created_at, updated_at)
-                values (?, ?, ?, 'open', ?, ?)
+                insert into intervention_sessions(user_id, workspace_id, source_analysis_task_id, target_agent_name, status, created_at, updated_at)
+                values (?, ?, ?, ?, 'open', ?, ?)
                 """,
-                (user_id, source_analysis_task_id, target_agent_name, now, now),
+                (user_id, workspace_id, source_analysis_task_id, target_agent_name, now, now),
             )
         return self.get_intervention_for_user(cur.lastrowid, user_id)
 
-    def list_interventions_for_user(self, user_id: int) -> list[dict[str, Any]]:
+    def list_interventions_for_user(self, user_id: int, workspace_id: int | None = None) -> list[dict[str, Any]]:
+        clauses = ["(user_id = ? or workspace_id in (select workspace_id from workspace_members where user_id = ?))"]
+        values: list[Any] = [user_id, user_id]
+        if workspace_id is not None:
+            clauses.append("workspace_id = ?")
+            values.append(workspace_id)
         with self.connect() as conn:
             rows = conn.execute(
-                "select * from intervention_sessions where user_id = ? order by created_at desc, id desc",
-                (user_id,),
+                f"select * from intervention_sessions where {' and '.join(clauses)} order by created_at desc, id desc",
+                tuple(values),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -840,8 +1202,11 @@ class WebRepository:
     def get_intervention_for_user(self, session_id: int, user_id: int) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute(
-                "select * from intervention_sessions where id = ? and user_id = ?",
-                (session_id, user_id),
+                """
+                select * from intervention_sessions
+                where id = ? and (user_id = ? or workspace_id in (select workspace_id from workspace_members where user_id = ?))
+                """,
+                (session_id, user_id, user_id),
             ).fetchone()
             if not row:
                 return None
@@ -865,7 +1230,13 @@ class WebRepository:
 
     def delete_intervention_for_user(self, session_id: int, user_id: int) -> bool:
         with self.connect() as conn:
-            cur = conn.execute("delete from intervention_sessions where id = ? and user_id = ?", (session_id, user_id))
+            cur = conn.execute(
+                """
+                delete from intervention_sessions
+                where id = ? and (user_id = ? or workspace_id in (select workspace_id from workspace_members where user_id = ? and role in ('owner', 'admin')))
+                """,
+                (session_id, user_id, user_id),
+            )
             return cur.rowcount > 0
 
     def append_intervention_message(self, session_id: int, user_id: int, content: str) -> dict[str, Any] | None:
@@ -891,8 +1262,11 @@ class WebRepository:
         closed_at = utcnow() if status == "closed" else None
         with self.connect() as conn:
             conn.execute(
-                "update intervention_sessions set status = ?, updated_at = ?, closed_at = coalesce(?, closed_at) where id = ? and user_id = ?",
-                (status, utcnow(), closed_at, session_id, user_id),
+                """
+                update intervention_sessions set status = ?, updated_at = ?, closed_at = coalesce(?, closed_at)
+                where id = ? and (user_id = ? or workspace_id in (select workspace_id from workspace_members where user_id = ? and role in ('owner', 'admin', 'member')))
+                """,
+                (status, utcnow(), closed_at, session_id, user_id, user_id),
             )
         return self.get_intervention_for_user(session_id, user_id)
 

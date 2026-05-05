@@ -33,6 +33,7 @@ class TokenResponse(BaseModel):
 
 
 class AnalysisCreate(BaseModel):
+    workspace_id: int | None = None
     ticker: str = Field(min_length=1, max_length=32)
     analysis_date: date
     analysts: list[str] = Field(min_length=1)
@@ -72,6 +73,7 @@ class AnalysisCreate(BaseModel):
 
     def parameter_payload(self) -> dict[str, Any]:
         return {
+            "workspace_id": self.workspace_id,
             "ticker": self.ticker,
             "analysis_date": self.analysis_date.isoformat(),
             "analysts": self.analysts,
@@ -89,6 +91,7 @@ class AnalysisCreate(BaseModel):
 
 
 class AnalysisRerun(BaseModel):
+    workspace_id: int | None = None
     ticker: str | None = None
     analysis_date: date | None = None
     analysts: list[str] | None = None
@@ -116,6 +119,7 @@ class AnalysisRerun(BaseModel):
 
 
 class ScheduledAnalysisCreate(BaseModel):
+    workspace_id: int | None = None
     name: str = Field(min_length=1, max_length=120)
     ticker: str = Field(min_length=1, max_length=32)
     start_at: datetime
@@ -146,6 +150,7 @@ class ScheduledAnalysisCreate(BaseModel):
 
 
 class ScheduledAnalysisUpdate(BaseModel):
+    workspace_id: int | None = None
     name: str | None = Field(default=None, min_length=1, max_length=120)
     ticker: str | None = Field(default=None, min_length=1, max_length=32)
     start_at: datetime | None = None
@@ -183,6 +188,7 @@ class RunDueRequest(BaseModel):
 class InterventionCreate(BaseModel):
     source_analysis_task_id: int
     target_agent_name: str = Field(min_length=1, max_length=120)
+    workspace_id: int | None = None
 
 
 class InterventionMessageCreate(BaseModel):
@@ -192,6 +198,27 @@ class InterventionMessageCreate(BaseModel):
 class MemoryUpdate(BaseModel):
     tags: dict[str, Any] | None = None
     title: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+WorkspaceRole = Literal["owner", "admin", "member", "viewer"]
+
+
+class WorkspaceCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class WorkspaceMemberCreate(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    role: WorkspaceRole
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        return UserCreate.normalize_email(value)
+
+
+class WorkspaceMemberUpdate(BaseModel):
+    role: WorkspaceRole
 
 
 class EventPayload(BaseModel):

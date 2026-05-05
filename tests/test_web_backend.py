@@ -843,3 +843,262 @@ def test_sqlite_backup_helper_and_idempotent_initialization(tmp_path: Path):
         assert conn.execute("select count(*) from users").fetchone()[0] == 1
         tables = {row[0] for row in conn.execute("select name from sqlite_master where type='table'").fetchall()}
     assert {"users", "audit_logs", "schema_migrations"} <= tables
+
+
+def test_workspace_personal_migration_roles_and_cross_workspace_isolation(tmp_path: Path):
+    client, _ = make_client(tmp_path)
+    owner_headers = login(client)
+    client.post(
+        "/api/auth/register",
+        json={"email": "workspace-member@example.com", "password": "correct horse battery staple"},
+    )
+    member_login = client.post(
+        "/api/auth/login",
+        json={"email": "workspace-member@example.com", "password": "correct horse battery staple"},
+    )
+    member_headers = {"Authorization": f"Bearer {member_login.json()['access_token']}"}
+
+    personal = client.get("/api/workspaces", headers=owner_headers)
+    assert personal.status_code == 200
+    assert personal.json()["items"][0]["kind"] == "personal"
+    assert personal.json()["items"][0]["role"] == "owner"
+
+    workspace = client.post("/api/workspaces", headers=owner_headers, json={"name": "Research Desk"}).json()
+    viewer = client.post(
+        f"/api/workspaces/{workspace['id']}/members",
+        headers=owner_headers,
+        json={"email": "workspace-member@example.com", "role": "viewer"},
+    )
+    assert viewer.status_code == 201
+    denied = client.post(
+        "/api/analyses",
+        headers=member_headers,
+        json={
+            "workspace_id": workspace["id"],
+            "ticker": "SPY",
+            "analysis_date": "2026-05-01",
+            "analysts": ["market"],
+            "research_depth": 1,
+            "llm_provider": "openai",
+            "quick_model": "gpt-5.4-mini",
+            "deep_model": "gpt-5.5",
+            "output_language": "English",
+        },
+    )
+    assert denied.status_code == 403
+
+    promoted = client.patch(
+        f"/api/workspaces/{workspace['id']}/members/{viewer.json()['user_id']}",
+        headers=owner_headers,
+        json={"role": "member"},
+    )
+    assert promoted.status_code == 200
+    created = client.post(
+        "/api/analyses",
+        headers=member_headers,
+        json={
+            "workspace_id": workspace["id"],
+            "ticker": "SPY",
+            "analysis_date": "2026-05-01",
+            "analysts": ["market"],
+            "research_depth": 1,
+            "llm_provider": "openai",
+            "quick_model": "gpt-5.4-mini",
+            "deep_model": "gpt-5.5",
+            "output_language": "English",
+        },
+    )
+    assert created.status_code == 201
+    task_id = created.json()["id"]
+    assert client.get(f"/api/analyses/{task_id}", headers=owner_headers).status_code == 200
+
+    private_workspace = client.post("/api/workspaces", headers=owner_headers, json={"name": "Private Desk"}).json()
+    private_task = client.post(
+        "/api/analyses",
+        headers=owner_headers,
+        json={
+            "workspace_id": private_workspace["id"],
+            "ticker": "AAPL",
+            "analysis_date": "2026-05-01",
+            "analysts": ["market"],
+            "research_depth": 1,
+            "llm_provider": "openai",
+            "quick_model": "gpt-5.4-mini",
+            "deep_model": "gpt-5.5",
+            "output_language": "English",
+        },
+    ).json()
+    assert client.get(f"/api/analyses/{private_task['id']}", headers=member_headers).status_code == 404
+
+
+def test_workspace_owner_retention_and_due_schedule_scope(tmp_path: Path):
+    client, _ = make_client(tmp_path)
+    headers = login(client)
+    first = client.post("/api/workspaces", headers=headers, json={"name": "First Due Desk"}).json()
+    second = client.post("/api/workspaces", headers=headers, json={"name": "Second Due Desk"}).json()
+
+    workspaces = client.get("/api/workspaces", headers=headers).json()["items"]
+    personal_owner_id = next(workspace for workspace in workspaces if workspace["kind"] == "personal")["created_by_user_id"]
+    orphaned_owner = client.patch(
+        f"/api/workspaces/{first['id']}/members/{personal_owner_id}",
+        headers=headers,
+        json={"role": "admin"},
+    )
+    assert orphaned_owner.status_code == 409
+
+    schedule_payload = {
+        "start_at": "2026-05-01T09:30:00+00:00",
+        "interval": "daily",
+        "analysts": ["market"],
+        "research_depth": 1,
+        "llm_provider": "openai",
+        "quick_model": "gpt-5.4-mini",
+        "deep_model": "gpt-5.5",
+        "output_language": "English",
+    }
+    first_schedule = client.post(
+        "/api/schedules",
+        headers=headers,
+        json={**schedule_payload, "workspace_id": first["id"], "name": "First due", "ticker": "SPY"},
+    ).json()
+    second_schedule = client.post(
+        "/api/schedules",
+        headers=headers,
+        json={**schedule_payload, "workspace_id": second["id"], "name": "Second due", "ticker": "AAPL"},
+    ).json()
+
+    run_due = client.post(
+        "/api/scheduler/run-due",
+        headers=headers,
+        params={"workspace_id": first["id"]},
+        json={"now": "2026-05-02T10:00:00+00:00"},
+    )
+    assert run_due.status_code == 200
+    executions = run_due.json()["executions"]
+    assert [execution["schedule_id"] for execution in executions] == [first_schedule["id"]]
+    assert client.get(f"/api/schedules/{second_schedule['id']}", headers=headers).json()["last_run_at"] is None
+
+
+def test_workspace_governance_audit_filters_and_export_scope(tmp_path: Path):
+    client, _ = make_client(tmp_path)
+    headers = login(client)
+    first = client.post("/api/workspaces", headers=headers, json={"name": "First"}).json()
+    second = client.post("/api/workspaces", headers=headers, json={"name": "Second"}).json()
+    payload = {
+        "ticker": "SPY",
+        "analysis_date": "2026-05-01",
+        "analysts": ["market"],
+        "research_depth": 1,
+        "llm_provider": "openai",
+        "quick_model": "gpt-5.4-mini",
+        "deep_model": "gpt-5.5",
+        "output_language": "English",
+    }
+    client.post("/api/analyses", headers=headers, json={**payload, "workspace_id": first["id"]})
+    client.post("/api/analyses", headers=headers, json={**payload, "workspace_id": second["id"], "ticker": "MSFT"})
+
+    audit = client.get(
+        "/api/governance/audit",
+        headers=headers,
+        params={"workspace_id": first["id"], "event_type": "analysis.create"},
+    )
+    assert audit.status_code == 200
+    assert {item["workspace_id"] for item in audit.json()["items"]} == {first["id"]}
+
+    exported = client.get(f"/api/workspaces/{first['id']}/export", headers=headers)
+    assert exported.status_code == 200
+    data = exported.json()
+    assert data["workspace"]["id"] == first["id"]
+    assert [item["parameters"]["ticker"] for item in data["analyses"]] == ["SPY"]
+
+
+def test_real_runner_budget_guardrail_blocks_and_audits_analysis(tmp_path: Path):
+    settings = WebSettings(
+        database_path=tmp_path / "web.sqlite3",
+        auth_secret="test-secret",
+        runner_mode="real",
+        allow_registration=True,
+        real_runner_user_analysis_limit=0,
+        real_runner_workspace_analysis_limit=0,
+    )
+    client = TestClient(create_app(settings=settings, run_tasks_inline=True))
+    headers = login(client)
+    blocked = client.post(
+        "/api/analyses",
+        headers=headers,
+        json={
+            "ticker": "SPY",
+            "analysis_date": "2026-05-01",
+            "analysts": ["market"],
+            "research_depth": 1,
+            "llm_provider": "openai",
+            "quick_model": "gpt-5.4-mini",
+            "deep_model": "gpt-5.5",
+            "output_language": "English",
+        },
+    )
+    assert blocked.status_code == 402
+    audit = client.get("/api/governance/audit", headers=headers, params={"event_type": "cost.blocked"})
+    assert audit.status_code == 200
+    assert audit.json()["items"][0]["metadata"]["reason"] == "user budget exceeded"
+
+
+def test_real_runner_budget_guardrail_blocks_continuation_and_schedule_trigger(tmp_path: Path):
+    settings = WebSettings(
+        database_path=tmp_path / "web.sqlite3",
+        auth_secret="test-secret",
+        runner_mode="demo",
+        allow_registration=True,
+        real_runner_user_analysis_limit=-1,
+        real_runner_workspace_analysis_limit=-1,
+    )
+    client = TestClient(create_app(settings=settings, run_tasks_inline=True))
+    headers = login(client)
+    payload = {
+        "ticker": "SPY",
+        "analysis_date": "2026-05-01",
+        "analysts": ["market"],
+        "research_depth": 1,
+        "llm_provider": "openai",
+        "quick_model": "gpt-5.4-mini",
+        "deep_model": "gpt-5.5",
+        "output_language": "English",
+    }
+    analysis = client.post("/api/analyses", headers=headers, json=payload).json()
+    intervention = client.post(
+        "/api/interventions",
+        headers=headers,
+        json={"source_analysis_task_id": analysis["id"], "target_agent_name": "Market Analyst"},
+    ).json()
+    schedule = client.post(
+        "/api/schedules",
+        headers=headers,
+        json={
+            "name": "Budget trigger",
+            "ticker": "SPY",
+            "start_at": "2026-05-01T09:30:00+00:00",
+            "interval": "daily",
+            "analysts": ["market"],
+            "research_depth": 1,
+            "llm_provider": "openai",
+            "quick_model": "gpt-5.4-mini",
+            "deep_model": "gpt-5.5",
+            "output_language": "English",
+        },
+    ).json()
+
+    object.__setattr__(settings, "runner_mode", "real")
+    object.__setattr__(settings, "real_runner_user_analysis_limit", 0)
+    continuation = client.post(f"/api/interventions/{intervention['id']}/run", headers=headers)
+    triggered = client.post(f"/api/schedules/{schedule['id']}/trigger", headers=headers)
+
+    assert continuation.status_code == 402
+    assert triggered.status_code == 402
+    audit = client.get("/api/governance/audit", headers=headers, params={"event_type": "cost.blocked"})
+    assert len(audit.json()["items"]) >= 2
+
+
+def test_backup_helper_rejects_missing_source_database(tmp_path: Path):
+    missing = tmp_path / "missing.sqlite3"
+    with pytest.raises(FileNotFoundError):
+        backup_sqlite_database(missing, tmp_path / "backup.sqlite3")

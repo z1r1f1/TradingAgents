@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   accountExportFilename,
   buildEditableParamsFromTask,
+  buildAuditQuery,
+  canCreateWorkspaceResource,
+  canManageWorkspaceMembers,
+  formatWorkspaceRoleLabel,
   parseAnalystsInput,
   shouldShowProductionSafetyWarning
 } from './App';
@@ -145,5 +149,31 @@ describe('production hardening frontend helpers', () => {
 
   it('builds deterministic export filenames from export timestamps', () => {
     expect(accountExportFilename('2026-05-05T11:00:00+00:00')).toBe('tradingagents-export-2026-05-05.json');
+  });
+});
+
+describe('workspace governance frontend helpers', () => {
+  it('labels workspace roles and enforces role affordances', () => {
+    expect(formatWorkspaceRoleLabel('owner')).toBe('Owner');
+    expect(canManageWorkspaceMembers('admin')).toBe(true);
+    expect(canManageWorkspaceMembers('member')).toBe(false);
+    expect(canCreateWorkspaceResource('member')).toBe(true);
+    expect(canCreateWorkspaceResource('viewer')).toBe(false);
+  });
+
+  it('builds workspace audit query filters without empty optional values', () => {
+    expect(
+      buildAuditQuery(3, {
+        userId: '7',
+        eventType: 'analysis.create',
+        startAt: '2026-05-01T00:00:00+00:00',
+        endAt: ''
+      })
+    ).toEqual({
+      workspace_id: '3',
+      user_id: '7',
+      event_type: 'analysis.create',
+      start_at: '2026-05-01T00:00:00+00:00'
+    });
   });
 });
