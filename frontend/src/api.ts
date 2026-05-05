@@ -123,6 +123,18 @@ export type RuntimeHealth = {
   redis_configured?: boolean;
 };
 
+export type GovernanceAuditEvent = {
+  id: number;
+  user_id?: number | null;
+  workspace_id?: number | null;
+  event_type: string;
+  resource_type?: string | null;
+  resource_id?: string | null;
+  metadata: Record<string, unknown>;
+  ip_address?: string | null;
+  created_at: string;
+};
+
 const API_BASE = import.meta.env.VITE_TRADINGAGENTS_API ?? 'http://localhost:8000';
 
 async function request<T>(path: string, token: string | null, init: RequestInit = {}): Promise<T> {
@@ -146,7 +158,7 @@ export const api = {
   addWorkspaceMember: (token: string, id: number, email: string, role: WorkspaceRole) => request<WorkspaceMember>(`/api/workspaces/${id}/members`, token, { method: 'POST', body: JSON.stringify({ email, role }) }),
   updateWorkspaceMember: (token: string, id: number, userId: number, role: WorkspaceRole) => request<WorkspaceMember>(`/api/workspaces/${id}/members/${userId}`, token, { method: 'PATCH', body: JSON.stringify({ role }) }),
   removeWorkspaceMember: (token: string, id: number, userId: number) => request<void>(`/api/workspaces/${id}/members/${userId}`, token, { method: 'DELETE' }),
-  listGovernanceAudit: (token: string, params: Record<string, string> = {}) => request<{ items: unknown[] }>(`/api/governance/audit?${new URLSearchParams(params)}`, token),
+  listGovernanceAudit: (token: string, params: Record<string, string> = {}) => request<{ items: GovernanceAuditEvent[] }>(`/api/governance/audit?${new URLSearchParams(params)}`, token),
   createAnalysis: (token: string, payload: AnalysisParams) => request<AnalysisTask>('/api/analyses', token, { method: 'POST', body: JSON.stringify(payload) }),
   listAnalyses: (token: string, params: Record<string, string> = {}) => request<{ items: AnalysisTask[] }>(`/api/analyses?${new URLSearchParams(params)}`, token),
   getAnalysis: (token: string, id: number) => request<AnalysisTask>(`/api/analyses/${id}`, token),
