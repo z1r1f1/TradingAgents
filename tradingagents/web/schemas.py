@@ -227,6 +227,37 @@ class WorkspaceMemberUpdate(BaseModel):
 
 
 RetentionResourceType = Literal["analyses", "schedules", "memories", "interventions", "audit_logs", "usage_ledger"]
+ProvisioningRole = Literal["admin", "member", "viewer"]
+
+
+class ProvisioningUserCreate(BaseModel):
+    workspace_id: int
+    email: str = Field(min_length=3, max_length=254)
+    role: ProvisioningRole = "viewer"
+    external_id: str | None = Field(default=None, max_length=256)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        return UserCreate.normalize_email(value)
+
+
+class ProvisioningUserUpdate(BaseModel):
+    role: ProvisioningRole | None = None
+    active: bool | None = None
+    external_id: str | None = Field(default=None, max_length=256)
+
+
+class LegalHoldCreate(BaseModel):
+    workspace_id: int
+    resource_type: RetentionResourceType
+    resource_id: str | None = Field(default=None, max_length=128)
+    reason: str = Field(min_length=3, max_length=500)
+    expires_at: datetime | None = None
+
+
+class LegalHoldRelease(BaseModel):
+    reason: str = Field(min_length=3, max_length=500)
 
 
 class RetentionPolicyRequest(BaseModel):

@@ -180,3 +180,122 @@ def test_retention_preview_and_apply_are_workspace_scoped_and_preserve_ledgers_b
     audit = client.get("/api/governance/audit", headers=owner_headers, params={"event_type": "retention.apply"}).json()["items"]
     assert audit[0]["workspace_id"] == owner_workspace["id"]
     assert audit[0]["metadata"]["resource_type"] == "analyses"
+
+
+def test_legal_hold_blocks_retention_and_compliance_export_includes_governance_records(tmp_path: Path):
+    client, db_path = make_client(tmp_path)
+    owner_headers = register_login(client)
+    workspace = client.get("/api/workspaces", headers=owner_headers).json()["items"][0]
+    task = client.post("/api/analyses", headers=owner_headers, json={**analysis_payload("SPY"), "workspace_id": workspace["id"]}).json()
+    old = "2026-01-01T00:00:00+00:00"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("update analysis_tasks set created_at = ?, updated_at = ? where id = ?", (old, old, task["id"]))
+        conn.commit()
+
+    hold = client.post(
+        "/api/governance/legal-holds",
+        headers=owner_headers,
+        json={"workspace_id": workspace["id"], "resource_type": "analyses", "resource_id": str(task["id"]), "reason": "investigation hold"},
+    )
+    assert hold.status_code == 201
+    assert hold.json()["active"] is True
+
+    preview = client.post(
+        "/api/governance/retention/preview",
+        headers=owner_headers,
+        json={"workspace_id": workspace["id"], "resource_type": "analyses", "cutoff_before": "2026-02-01T00:00:00+00:00"},
+    ).json()
+    assert preview["matched_count"] == 1
+    assert preview["held_count"] == 1
+    assert preview["eligible_count"] == 0
+
+    apply = client.post(
+        "/api/governance/retention/apply",
+        headers=owner_headers,
+        json={"workspace_id": workspace["id"], "resource_type": "analyses", "cutoff_before": "2026-02-01T00:00:00+00:00"},
+    ).json()
+    assert apply["affected_count"] == 0
+    assert client.get(f"/api/analyses/{task['id']}", headers=owner_headers).status_code == 200
+
+    export = client.get("/api/governance/compliance-export", headers=owner_headers, params={"workspace_id": workspace["id"]})
+    assert export.status_code == 200
+    body = export.json()
+    assert body["format"] == "tradingagents.web.compliance.v1"
+    assert body["legal_holds"][0]["resource_id"] == str(task["id"])
+    assert any(item["event_type"] == "retention.apply" for item in body["retention_decisions"])
+    assert "access_token" not in str(body).lower()
+
+
+def test_admin_provisioning_lifecycle_never_grants_owner_and_records_events(tmp_path: Path):
+    client, _ = make_client(tmp_path)
+    owner_headers = register_login(client)
+    workspace = client.get("/api/workspaces", headers=owner_headers).json()["items"][0]
+
+    owner_attempt = client.post(
+        "/api/provisioning/users",
+        headers=owner_headers,
+        json={"workspace_id": workspace["id"], "email": "new@example.com", "role": "owner"},
+    )
+    assert owner_attempt.status_code == 422
+
+    provisioned = client.post(
+        "/api/provisioning/users",
+        headers=owner_headers,
+        json={"workspace_id": workspace["id"], "email": "new@example.com", "role": "viewer", "external_id": "scim-ish-1"},
+    )
+    assert provisioned.status_code == 201
+    member = provisioned.json()
+    assert member["role"] == "viewer"
+    assert member["email"] == "new@example.com"
+
+    deactivated = client.patch(
+        f"/api/provisioning/workspaces/{workspace['id']}/users/{member['user_id']}",
+        headers=owner_headers,
+        json={"active": False},
+    )
+    assert deactivated.status_code == 200
+    assert deactivated.json()["active"] is False
+
+    events = client.get("/api/provisioning/events", headers=owner_headers, params={"workspace_id": workspace["id"]}).json()["items"]
+    assert [event["action"] for event in events[:2]] == ["provision_deactivate", "provision_create_user"]
+    assert all(event.get("role") != "owner" for event in events)
+
+
+def test_mocked_idp_health_check_is_sanitized_and_operator_scoped(tmp_path: Path, monkeypatch):
+    client, _ = make_client(
+        tmp_path,
+        oidc_enabled=True,
+        oidc_issuer_url="https://idp.example.com",
+        oidc_client_id="tradingagents",
+        oidc_client_secret="super-secret-client-value",
+        oidc_redirect_uri="http://localhost:5173/auth/oidc/callback",
+    )
+    owner_headers = register_login(client)
+    workspace = client.get("/api/workspaces", headers=owner_headers).json()["items"][0]
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload: dict):
+            self.payload = payload
+
+        def json(self) -> dict:
+            return self.payload
+
+    calls: list[tuple[str, dict | None]] = []
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append((url, headers))
+        if url.endswith("/.well-known/openid-configuration"):
+            return FakeResponse({"userinfo_endpoint": "https://idp.example.com/userinfo"})
+        return FakeResponse({"ok": True})
+
+    monkeypatch.setattr("tradingagents.web.main.requests.get", fake_get)
+
+    health = client.get("/api/identity/idp-health", headers=owner_headers, params={"workspace_id": workspace["id"]})
+    assert health.status_code == 200
+    body = health.json()
+    assert body["ok"] is True
+    assert [check["name"] for check in body["checks"]] == ["discovery", "userinfo"]
+    assert all(headers is None for _, headers in calls)
+    assert "super-secret-client-value" not in str(body)

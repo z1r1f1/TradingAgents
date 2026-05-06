@@ -173,10 +173,61 @@ export type RetentionResult = {
   resource_type: RetentionResourceType;
   cutoff_before: string;
   matched_count?: number;
+  eligible_count?: number;
+  held_count?: number;
+  held_resources?: { id: string; resource_type: string }[];
   affected_count?: number;
   dry_run?: boolean;
   applied?: boolean;
   mode?: string;
+};
+
+export type LegalHold = {
+  id: number;
+  workspace_id: number;
+  resource_type: RetentionResourceType;
+  resource_id?: string | null;
+  reason: string;
+  expires_at?: string | null;
+  created_by_user_id?: number | null;
+  created_at: string;
+  released_at?: string | null;
+  release_reason?: string | null;
+  active: boolean;
+};
+
+export type ProvisioningEvent = {
+  id: number;
+  workspace_id: number;
+  actor_user_id?: number | null;
+  target_user_id?: number | null;
+  target_email: string;
+  action: string;
+  role?: WorkspaceRole | null;
+  status: string;
+  external_id?: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+};
+
+export type IdpHealth = {
+  ok: boolean;
+  oidc_enabled: boolean;
+  issuer_url?: string | null;
+  checks: { name: string; ok: boolean; status_code?: number | null; reason?: string }[];
+  reason?: string;
+};
+
+export type ComplianceExport = {
+  format: string;
+  exported_at: string;
+  workspace?: Workspace | null;
+  audit_logs: GovernanceAuditEvent[];
+  identity_mappings: IdentityUser[];
+  retention_decisions: GovernanceAuditEvent[];
+  usage_ledger: unknown[];
+  legal_holds: LegalHold[];
+  provisioning_events: ProvisioningEvent[];
 };
 
 const API_BASE = import.meta.env.VITE_TRADINGAGENTS_API ?? 'http://localhost:8000';
@@ -207,8 +258,16 @@ export const api = {
   oidcCallback: (code: string, redirectUri?: string) => request<{ access_token: string; user: { email: string } }>('/api/auth/oidc/callback', null, { method: 'POST', body: JSON.stringify({ code, redirect_uri: redirectUri }) }),
   identityStatus: (token: string) => request<IdentityStatus>('/api/identity/status', token),
   listIdentityUsers: (token: string, params: Record<string, string> = {}) => request<{ items: IdentityUser[] }>(`/api/identity/users?${new URLSearchParams(params)}`, token),
+  idpHealth: (token: string, workspaceId: number) => request<IdpHealth>(`/api/identity/idp-health?${new URLSearchParams({ workspace_id: String(workspaceId) })}`, token),
+  provisionUser: (token: string, workspaceId: number, email: string, role: Exclude<WorkspaceRole, 'owner'>) => request<WorkspaceMember>('/api/provisioning/users', token, { method: 'POST', body: JSON.stringify({ workspace_id: workspaceId, email, role }) }),
+  updateProvisionedUser: (token: string, workspaceId: number, userId: number, payload: { role?: Exclude<WorkspaceRole, 'owner'>; active?: boolean }) => request<WorkspaceMember>(`/api/provisioning/workspaces/${workspaceId}/users/${userId}`, token, { method: 'PATCH', body: JSON.stringify(payload) }),
+  listProvisioningEvents: (token: string, workspaceId: number) => request<{ items: ProvisioningEvent[] }>(`/api/provisioning/events?${new URLSearchParams({ workspace_id: String(workspaceId) })}`, token),
   retentionPreview: (token: string, payload: RetentionPolicy) => request<RetentionResult>('/api/governance/retention/preview', token, { method: 'POST', body: JSON.stringify(payload) }),
   retentionApply: (token: string, payload: RetentionPolicy) => request<RetentionResult>('/api/governance/retention/apply', token, { method: 'POST', body: JSON.stringify(payload) }),
+  listLegalHolds: (token: string, workspaceId: number) => request<{ items: LegalHold[] }>(`/api/governance/legal-holds?${new URLSearchParams({ workspace_id: String(workspaceId) })}`, token),
+  createLegalHold: (token: string, workspaceId: number, resourceType: RetentionResourceType, resourceId: string | null, reason: string) => request<LegalHold>('/api/governance/legal-holds', token, { method: 'POST', body: JSON.stringify({ workspace_id: workspaceId, resource_type: resourceType, resource_id: resourceId || null, reason }) }),
+  releaseLegalHold: (token: string, workspaceId: number, holdId: number, reason: string) => request<LegalHold>(`/api/governance/legal-holds/${holdId}/release?${new URLSearchParams({ workspace_id: String(workspaceId) })}`, token, { method: 'POST', body: JSON.stringify({ reason }) }),
+  complianceExport: (token: string, workspaceId: number) => request<ComplianceExport>(`/api/governance/compliance-export?${new URLSearchParams({ workspace_id: String(workspaceId) })}`, token),
   createAnalysis: (token: string, payload: AnalysisParams) => request<AnalysisTask>('/api/analyses', token, { method: 'POST', body: JSON.stringify(payload) }),
   listAnalyses: (token: string, params: Record<string, string> = {}) => request<{ items: AnalysisTask[] }>(`/api/analyses?${new URLSearchParams(params)}`, token),
   getAnalysis: (token: string, id: number) => request<AnalysisTask>(`/api/analyses/${id}`, token),

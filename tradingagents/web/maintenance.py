@@ -17,6 +17,8 @@ MIGRATION_TABLES = [
     "schema_migrations",
     "audit_logs",
     "usage_ledger_events",
+    "provisioning_events",
+    "legal_holds",
     "sessions",
     "analysis_tasks",
     "task_parameters",

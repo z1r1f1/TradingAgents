@@ -20,8 +20,12 @@ from .schemas import (
     AnalysisRerun,
     InterventionCreate,
     InterventionMessageCreate,
+    LegalHoldCreate,
+    LegalHoldRelease,
     LoginRequest,
     OidcCallbackRequest,
+    ProvisioningUserCreate,
+    ProvisioningUserUpdate,
     RetentionPolicyRequest,
     RunDueRequest,
     ScheduledAnalysisCreate,
@@ -257,6 +261,31 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
             "mapped_groups": sorted(settings.oidc_group_role_mapping.keys()) if settings.oidc_enabled else [],
         }
 
+    def oidc_live_health() -> dict:
+        if not settings.oidc_enabled or not settings.oidc_issuer_url:
+            return {"ok": False, "oidc_enabled": settings.oidc_enabled, "checks": [], "reason": "OIDC is disabled"}
+        checks: list[dict] = []
+        try:
+            discovery_response = requests.get(oidc_discovery_url(), timeout=10)
+            discovery_ok = 200 <= getattr(discovery_response, "status_code", 200) < 500
+            discovery = discovery_response.json() if discovery_ok else {}
+            checks.append({"name": "discovery", "ok": discovery_ok, "status_code": getattr(discovery_response, "status_code", None)})
+            userinfo_endpoint = discovery.get("userinfo_endpoint") if isinstance(discovery, dict) else None
+            if userinfo_endpoint:
+                userinfo_response = requests.get(userinfo_endpoint, timeout=10)
+                userinfo_status = getattr(userinfo_response, "status_code", 200)
+                checks.append({"name": "userinfo", "ok": userinfo_status < 500, "status_code": userinfo_status})
+            else:
+                checks.append({"name": "userinfo", "ok": False, "status_code": None, "reason": "missing userinfo_endpoint"})
+        except Exception as exc:
+            checks.append({"name": "provider", "ok": False, "reason": exc.__class__.__name__})
+        return {
+            "ok": all(check.get("ok") for check in checks),
+            "oidc_enabled": True,
+            "issuer_url": settings.oidc_issuer_url,
+            "checks": checks,
+        }
+
     @app.get("/health")
     @app.get("/api/health")
     def health() -> dict:
@@ -380,6 +409,82 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
         if workspace_id is not None:
             require_workspace_role(user, workspace_id, {"owner", "admin"})
         return {"items": repository.list_identity_links(workspace_id=workspace_id)}
+
+    @app.get("/api/identity/idp-health")
+    def identity_idp_health(workspace_id: int, request: Request, user: dict = Depends(current_user)) -> dict:
+        require_workspace_role(user, workspace_id, {"owner", "admin"})
+        result = oidc_live_health()
+        audit(
+            "identity.idp_health",
+            user_id=user["id"],
+            workspace_id=workspace_id,
+            resource_type="identity_provider",
+            metadata={"ok": result["ok"], "issuer_url": result.get("issuer_url"), "checks": result.get("checks", [])},
+            request=request,
+        )
+        return result
+
+    @app.get("/api/provisioning/events")
+    def provisioning_events(workspace_id: int, user: dict = Depends(current_user)) -> dict:
+        require_workspace_role(user, workspace_id, {"owner", "admin"})
+        return {"items": repository.list_provisioning_events(workspace_id=workspace_id)}
+
+    @app.post("/api/provisioning/users", status_code=201)
+    def provision_user(payload: ProvisioningUserCreate, request: Request, user: dict = Depends(current_user)) -> dict:
+        enforce_rate_limit("mutation", request, settings.mutation_rate_limit, user)
+        require_workspace_role(user, payload.workspace_id, {"owner", "admin"})
+        try:
+            member = repository.provision_workspace_user(
+                workspace_id=payload.workspace_id,
+                email=payload.email,
+                role=payload.role,
+                actor_user_id=user["id"],
+                external_id=payload.external_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        audit(
+            "provisioning.user.provision",
+            user_id=user["id"],
+            workspace_id=payload.workspace_id,
+            resource_type="workspace_member",
+            resource_id=member["user_id"],
+            metadata={"role": payload.role, "external_id": payload.external_id},
+            request=request,
+        )
+        return member
+
+    @app.patch("/api/provisioning/workspaces/{workspace_id}/users/{target_user_id}")
+    def update_provisioned_user(
+        workspace_id: int,
+        target_user_id: int,
+        payload: ProvisioningUserUpdate,
+        request: Request,
+        user: dict = Depends(current_user),
+    ) -> dict:
+        enforce_rate_limit("mutation", request, settings.mutation_rate_limit, user)
+        require_workspace_role(user, workspace_id, {"owner", "admin"})
+        try:
+            member = repository.update_provisioned_workspace_user(
+                workspace_id=workspace_id,
+                target_user_id=target_user_id,
+                actor_user_id=user["id"],
+                role=payload.role,
+                active=payload.active,
+                external_id=payload.external_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        audit(
+            "provisioning.user.update",
+            user_id=user["id"],
+            workspace_id=workspace_id,
+            resource_type="workspace_member",
+            resource_id=target_user_id,
+            metadata={"role": payload.role, "active": payload.active, "external_id": payload.external_id},
+            request=request,
+        )
+        return member
 
     @app.get("/api/workspaces")
     def list_workspaces(user: dict = Depends(current_user)) -> dict:
@@ -612,6 +717,60 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
             request=request,
         )
         return result
+
+    @app.get("/api/governance/legal-holds")
+    def list_legal_holds(workspace_id: int, active_only: bool = False, user: dict = Depends(current_user)) -> dict:
+        require_workspace_role(user, workspace_id, {"owner", "admin"})
+        return {"items": repository.list_legal_holds(workspace_id=workspace_id, active_only=active_only)}
+
+    @app.post("/api/governance/legal-holds", status_code=201)
+    def create_legal_hold(payload: LegalHoldCreate, request: Request, user: dict = Depends(current_user)) -> dict:
+        enforce_rate_limit("mutation", request, settings.mutation_rate_limit, user)
+        require_workspace_role(user, payload.workspace_id, {"owner", "admin"})
+        hold = repository.create_legal_hold(
+            workspace_id=payload.workspace_id,
+            resource_type=payload.resource_type,
+            resource_id=payload.resource_id,
+            reason=payload.reason,
+            expires_at=payload.expires_at.isoformat() if payload.expires_at else None,
+            created_by_user_id=user["id"],
+        )
+        audit(
+            "legal_hold.create",
+            user_id=user["id"],
+            workspace_id=payload.workspace_id,
+            resource_type="legal_hold",
+            resource_id=hold["id"],
+            metadata={"resource_type": payload.resource_type, "resource_id": payload.resource_id},
+            request=request,
+        )
+        return hold
+
+    @app.post("/api/governance/legal-holds/{hold_id}/release")
+    def release_legal_hold(hold_id: int, workspace_id: int, payload: LegalHoldRelease, request: Request, user: dict = Depends(current_user)) -> dict:
+        enforce_rate_limit("mutation", request, settings.mutation_rate_limit, user)
+        require_workspace_role(user, workspace_id, {"owner", "admin"})
+        hold = repository.release_legal_hold(workspace_id=workspace_id, hold_id=hold_id, released_by_user_id=user["id"], reason=payload.reason)
+        if not hold:
+            raise HTTPException(status_code=404, detail="legal hold not found")
+        audit(
+            "legal_hold.release",
+            user_id=user["id"],
+            workspace_id=workspace_id,
+            resource_type="legal_hold",
+            resource_id=hold_id,
+            metadata={"resource_type": hold["resource_type"], "resource_id": hold["resource_id"]},
+            request=request,
+        )
+        return hold
+
+    @app.get("/api/governance/compliance-export")
+    def compliance_export(workspace_id: int, request: Request, user: dict = Depends(current_user)) -> dict:
+        enforce_rate_limit("export", request, settings.mutation_rate_limit, user)
+        require_workspace_role(user, workspace_id, {"owner", "admin"})
+        data = repository.export_workspace_compliance(workspace_id=workspace_id, requester_user_id=user["id"])
+        audit("compliance.export", user_id=user["id"], workspace_id=workspace_id, resource_type="workspace", resource_id=workspace_id, request=request)
+        return data
 
     @app.get("/api/workspaces/{workspace_id}/export")
     def export_workspace(workspace_id: int, request: Request, user: dict = Depends(current_user)) -> dict:

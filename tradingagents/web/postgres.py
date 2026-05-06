@@ -44,6 +44,8 @@ class PgConnection:
         "user_identity_links",
         "workspaces",
         "audit_logs",
+        "provisioning_events",
+        "legal_holds",
         "sessions",
         "analysis_tasks",
         "task_parameters",
@@ -91,7 +93,7 @@ class PgConnection:
 
 
 class PostgresSchemaManager:
-    MIGRATION_VERSION = "phase7-production-cluster-runtime"
+    MIGRATION_VERSION = "phase10-enterprise-compliance-provisioning"
 
     @classmethod
     def required_tables(cls) -> list[str]:
@@ -103,6 +105,8 @@ class PostgresSchemaManager:
             "schema_migrations",
             "audit_logs",
             "usage_ledger_events",
+            "provisioning_events",
+            "legal_holds",
             "sessions",
             "analysis_tasks",
             "task_parameters",
@@ -222,6 +226,32 @@ class PostgresSchemaManager:
             metadata_json text not null,
             occurred_at text not null,
             created_at text not null
+        );
+        create table if not exists provisioning_events (
+            id bigserial primary key,
+            workspace_id bigint not null references workspaces(id) on delete cascade,
+            actor_user_id bigint references users(id) on delete set null,
+            target_user_id bigint references users(id) on delete set null,
+            target_email text not null,
+            action text not null,
+            role text,
+            status text not null,
+            external_id text,
+            metadata_json text not null,
+            created_at text not null
+        );
+        create table if not exists legal_holds (
+            id bigserial primary key,
+            workspace_id bigint not null references workspaces(id) on delete cascade,
+            resource_type text not null,
+            resource_id text,
+            reason text not null,
+            expires_at text,
+            created_by_user_id bigint references users(id) on delete set null,
+            created_at text not null,
+            released_at text,
+            released_by_user_id bigint references users(id) on delete set null,
+            release_reason text
         );
         create table if not exists sessions (
             id bigserial primary key,

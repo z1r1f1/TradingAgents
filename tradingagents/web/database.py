@@ -98,6 +98,32 @@ class WebRepository:
                     occurred_at text not null,
                     created_at text not null
                 );
+                create table if not exists provisioning_events (
+                    id integer primary key autoincrement,
+                    workspace_id integer not null references workspaces(id) on delete cascade,
+                    actor_user_id integer references users(id) on delete set null,
+                    target_user_id integer references users(id) on delete set null,
+                    target_email text not null,
+                    action text not null,
+                    role text,
+                    status text not null,
+                    external_id text,
+                    metadata_json text not null,
+                    created_at text not null
+                );
+                create table if not exists legal_holds (
+                    id integer primary key autoincrement,
+                    workspace_id integer not null references workspaces(id) on delete cascade,
+                    resource_type text not null,
+                    resource_id text,
+                    reason text not null,
+                    expires_at text,
+                    created_by_user_id integer references users(id) on delete set null,
+                    created_at text not null,
+                    released_at text,
+                    released_by_user_id integer references users(id) on delete set null,
+                    release_reason text
+                );
                 create table if not exists sessions (
                     id integer primary key autoincrement,
                     user_id integer not null references users(id) on delete cascade,
@@ -283,6 +309,10 @@ class WebRepository:
                 "insert or ignore into schema_migrations(version, applied_at) values (?, ?)",
                 ("phase9-enterprise-identity-retention", utcnow()),
             )
+            conn.execute(
+                "insert or ignore into schema_migrations(version, applied_at) values (?, ?)",
+                ("phase10-enterprise-compliance-provisioning", utcnow()),
+            )
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
         columns = {row["name"] for row in conn.execute(f"pragma table_info({table})").fetchall()}
@@ -452,6 +482,137 @@ class WebRepository:
             item["email"] = item.pop("user_email")
             result.append(item)
         return result
+
+    def provision_workspace_user(
+        self,
+        *,
+        workspace_id: int,
+        email: str,
+        role: str,
+        actor_user_id: int,
+        external_id: str | None = None,
+    ) -> dict[str, Any]:
+        if role == "owner":
+            raise ValueError("provisioning cannot grant workspace owner")
+        normalized_email = email.strip().lower()
+        user = self.get_user_by_email(normalized_email)
+        action = "provision"
+        if user is None:
+            user = self.create_user(normalized_email, new_token())
+            action = "provision_create_user"
+        member = self.add_workspace_member(workspace_id, normalized_email, role)
+        if not member:
+            raise ValueError("provisioned user could not be attached to workspace")
+        self.record_provisioning_event(
+            workspace_id=workspace_id,
+            actor_user_id=actor_user_id,
+            target_user_id=int(user["id"]),
+            target_email=normalized_email,
+            action=action,
+            role=role,
+            status="active",
+            external_id=external_id,
+        )
+        return member
+
+    def update_provisioned_workspace_user(
+        self,
+        *,
+        workspace_id: int,
+        target_user_id: int,
+        actor_user_id: int,
+        role: str | None = None,
+        active: bool | None = None,
+        external_id: str | None = None,
+    ) -> dict[str, Any]:
+        if role == "owner":
+            raise ValueError("provisioning cannot grant workspace owner")
+        target = self.get_user(target_user_id)
+        if not target:
+            raise ValueError("target user not found")
+        result: dict[str, Any] | None = None
+        action = "provision_update"
+        status = "active"
+        if role:
+            result = self.update_workspace_member_role(workspace_id, target_user_id, role)
+            if result is None:
+                raise ValueError("workspace member not found")
+            action = "provision_role_update"
+        if active is False:
+            if not self.remove_workspace_member(workspace_id, target_user_id):
+                raise ValueError("workspace member cannot be deactivated")
+            result = {"workspace_id": workspace_id, "user_id": target_user_id, "email": target["email"], "role": role, "active": False}
+            action = "provision_deactivate"
+            status = "inactive"
+        elif result is None:
+            with self.connect() as conn:
+                row = conn.execute(
+                    """
+                    select wm.workspace_id, wm.user_id, wm.role, wm.created_at, wm.updated_at, u.email
+                    from workspace_members wm join users u on u.id = wm.user_id
+                    where wm.workspace_id = ? and wm.user_id = ?
+                    """,
+                    (workspace_id, target_user_id),
+                ).fetchone()
+            if not row:
+                raise ValueError("workspace member not found")
+            result = dict(row)
+        self.record_provisioning_event(
+            workspace_id=workspace_id,
+            actor_user_id=actor_user_id,
+            target_user_id=target_user_id,
+            target_email=target["email"],
+            action=action,
+            role=role or result.get("role"),
+            status=status,
+            external_id=external_id,
+        )
+        return result
+
+    def record_provisioning_event(
+        self,
+        *,
+        workspace_id: int,
+        actor_user_id: int | None,
+        target_user_id: int | None,
+        target_email: str,
+        action: str,
+        role: str | None,
+        status: str,
+        external_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                insert into provisioning_events(
+                    workspace_id, actor_user_id, target_user_id, target_email, action, role, status,
+                    external_id, metadata_json, created_at
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    workspace_id,
+                    actor_user_id,
+                    target_user_id,
+                    target_email,
+                    action,
+                    role,
+                    status,
+                    external_id,
+                    json.dumps(metadata or {}),
+                    utcnow(),
+                ),
+            )
+            row = conn.execute("select * from provisioning_events where id = ?", (cur.lastrowid,)).fetchone()
+        return self._provisioning_event_dict(row)
+
+    def list_provisioning_events(self, *, workspace_id: int) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "select * from provisioning_events where workspace_id = ? order by created_at desc, id desc",
+                (workspace_id,),
+            ).fetchall()
+        return [self._provisioning_event_dict(row) for row in rows]
 
     def authenticate(self, email: str, password: str) -> dict[str, Any] | None:
         row = self.get_user_by_email(email)
@@ -695,19 +856,82 @@ class WebRepository:
             ).fetchall()
         return [self._audit_log_dict(row) for row in rows]
 
+    def list_audit_logs_for_workspace(self, workspace_id: int, *, event_type: str | None = None) -> list[dict[str, Any]]:
+        clauses = ["workspace_id = ?"]
+        values: list[Any] = [workspace_id]
+        if event_type:
+            clauses.append("event_type = ?")
+            values.append(event_type)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"select * from audit_logs where {' and '.join(clauses)} order by created_at desc, id desc",
+                tuple(values),
+            ).fetchall()
+        return [self._audit_log_dict(row) for row in rows]
+
+    def create_legal_hold(
+        self,
+        *,
+        workspace_id: int,
+        resource_type: str,
+        resource_id: str | None,
+        reason: str,
+        created_by_user_id: int,
+        expires_at: str | None = None,
+    ) -> dict[str, Any]:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                insert into legal_holds(
+                    workspace_id, resource_type, resource_id, reason, expires_at, created_by_user_id, created_at
+                ) values (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (workspace_id, resource_type, resource_id, reason, expires_at, created_by_user_id, utcnow()),
+            )
+            row = conn.execute("select * from legal_holds where id = ?", (cur.lastrowid,)).fetchone()
+        return self._legal_hold_dict(row)
+
+    def list_legal_holds(self, *, workspace_id: int, active_only: bool = False) -> list[dict[str, Any]]:
+        clauses = ["workspace_id = ?"]
+        values: list[Any] = [workspace_id]
+        if active_only:
+            clauses.append("released_at is null")
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"select * from legal_holds where {' and '.join(clauses)} order by created_at desc, id desc",
+                tuple(values),
+            ).fetchall()
+        return [self._legal_hold_dict(row) for row in rows]
+
+    def release_legal_hold(self, *, workspace_id: int, hold_id: int, released_by_user_id: int, reason: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                update legal_holds
+                set released_at = ?, released_by_user_id = ?, release_reason = ?
+                where id = ? and workspace_id = ? and released_at is null
+                """,
+                (utcnow(), released_by_user_id, reason, hold_id, workspace_id),
+            )
+            row = conn.execute("select * from legal_holds where id = ? and workspace_id = ?", (hold_id, workspace_id)).fetchone()
+        return self._legal_hold_dict(row) if row else None
+
     def retention_preview(self, *, workspace_id: int, resource_type: str, cutoff_before: str) -> dict[str, Any]:
         table, timestamp_column = self._retention_table(resource_type)
-        with self.connect() as conn:
-            count = conn.execute(
-                f"select count(*) from {table} where workspace_id = ? and {timestamp_column} < ?",
-                (workspace_id, cutoff_before),
-            ).fetchone()[0]
+        matched_rows = self._retention_candidate_rows(workspace_id=workspace_id, resource_type=resource_type, cutoff_before=cutoff_before)
+        held_ids = self._active_held_resource_ids(workspace_id=workspace_id, resource_type=resource_type)
+        type_wide_hold = self._has_type_wide_legal_hold(workspace_id=workspace_id, resource_type=resource_type)
+        held_rows = matched_rows if type_wide_hold else [row for row in matched_rows if str(row["id"]) in held_ids]
+        eligible_count = 0 if type_wide_hold else len(matched_rows) - len(held_rows)
         return {
             "dry_run": True,
             "workspace_id": workspace_id,
             "resource_type": resource_type,
             "cutoff_before": cutoff_before,
-            "matched_count": int(count),
+            "matched_count": len(matched_rows),
+            "eligible_count": eligible_count,
+            "held_count": len(held_rows),
+            "held_resources": [{"id": str(row["id"]), "resource_type": resource_type} for row in held_rows],
         }
 
     def retention_apply(
@@ -719,26 +943,71 @@ class WebRepository:
         archive_memories: bool = True,
     ) -> dict[str, Any]:
         table, timestamp_column = self._retention_table(resource_type)
+        matched_rows = self._retention_candidate_rows(workspace_id=workspace_id, resource_type=resource_type, cutoff_before=cutoff_before)
+        held_ids = self._active_held_resource_ids(workspace_id=workspace_id, resource_type=resource_type)
+        type_wide_hold = self._has_type_wide_legal_hold(workspace_id=workspace_id, resource_type=resource_type)
+        held_rows = matched_rows if type_wide_hold else [row for row in matched_rows if str(row["id"]) in held_ids]
+        eligible_ids = [] if type_wide_hold else [int(row["id"]) for row in matched_rows if str(row["id"]) not in held_ids]
         with self.connect() as conn:
-            if resource_type == "memories" and archive_memories:
+            if not eligible_ids:
+                affected = 0
+            elif resource_type == "memories" and archive_memories:
+                placeholders = ", ".join("?" for _ in eligible_ids)
                 cur = conn.execute(
-                    f"update {table} set archived = 1 where workspace_id = ? and {timestamp_column} < ? and archived = 0",
-                    (workspace_id, cutoff_before),
+                    f"update {table} set archived = 1 where id in ({placeholders}) and archived = 0",
+                    tuple(eligible_ids),
                 )
+                affected = cur.rowcount
             else:
+                placeholders = ", ".join("?" for _ in eligible_ids)
                 cur = conn.execute(
-                    f"delete from {table} where workspace_id = ? and {timestamp_column} < ?",
-                    (workspace_id, cutoff_before),
+                    f"delete from {table} where id in ({placeholders})",
+                    tuple(eligible_ids),
                 )
-            affected = cur.rowcount
+                affected = cur.rowcount
         return {
             "applied": True,
             "workspace_id": workspace_id,
             "resource_type": resource_type,
             "cutoff_before": cutoff_before,
+            "matched_count": len(matched_rows),
             "affected_count": int(affected),
+            "held_count": len(held_rows),
+            "held_resources": [{"id": str(row["id"]), "resource_type": resource_type} for row in held_rows],
             "mode": "archive" if resource_type == "memories" and archive_memories else "delete",
         }
+
+    def _retention_candidate_rows(self, *, workspace_id: int, resource_type: str, cutoff_before: str) -> list[dict[str, Any]]:
+        table, timestamp_column = self._retention_table(resource_type)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"select id from {table} where workspace_id = ? and {timestamp_column} < ? order by id",
+                (workspace_id, cutoff_before),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _active_held_resource_ids(self, *, workspace_id: int, resource_type: str) -> set[str]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select resource_id from legal_holds
+                where workspace_id = ? and resource_type = ? and released_at is null and resource_id is not null
+                """,
+                (workspace_id, resource_type),
+            ).fetchall()
+        return {str(row["resource_id"]) for row in rows}
+
+    def _has_type_wide_legal_hold(self, *, workspace_id: int, resource_type: str) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                select 1 from legal_holds
+                where workspace_id = ? and resource_type = ? and released_at is null and resource_id is null
+                limit 1
+                """,
+                (workspace_id, resource_type),
+            ).fetchone()
+        return bool(row)
 
     def _retention_table(self, resource_type: str) -> tuple[str, str]:
         mapping = {
@@ -1060,6 +1329,23 @@ class WebRepository:
             "memories": self.list_memories_for_user(user_id, archived=None, workspace_id=workspace_id),
             "schedules": [item for item in schedules if item],
             "interventions": [item for item in interventions if item],
+        }
+
+    def export_workspace_compliance(self, *, workspace_id: int, requester_user_id: int) -> dict[str, Any]:
+        workspace = self.get_workspace_for_user(workspace_id, requester_user_id)
+        usage_ledger = self.list_usage_ledger(workspace_id=workspace_id)
+        audit_logs = self.list_audit_logs_for_workspace(workspace_id)
+        retention_decisions = [item for item in audit_logs if item["event_type"].startswith("retention.")]
+        return {
+            "format": "tradingagents.web.compliance.v1",
+            "exported_at": utcnow(),
+            "workspace": workspace,
+            "audit_logs": audit_logs,
+            "identity_mappings": self.list_identity_links(workspace_id=workspace_id),
+            "retention_decisions": retention_decisions,
+            "usage_ledger": usage_ledger,
+            "legal_holds": self.list_legal_holds(workspace_id=workspace_id),
+            "provisioning_events": self.list_provisioning_events(workspace_id=workspace_id),
         }
 
     def get_task_for_user(self, task_id: int, user_id: int, *, include_detail: bool = True) -> dict[str, Any] | None:
@@ -1670,6 +1956,16 @@ class WebRepository:
         data = dict(row)
         data["allowed"] = bool(data["allowed"])
         data["metadata"] = json.loads(data.pop("metadata_json"))
+        return data
+
+    def _provisioning_event_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        data = dict(row)
+        data["metadata"] = json.loads(data.pop("metadata_json"))
+        return data
+
+    def _legal_hold_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        data = dict(row)
+        data["active"] = data.get("released_at") is None
         return data
 
     def _event_dict(self, row: sqlite3.Row) -> dict[str, Any]:
