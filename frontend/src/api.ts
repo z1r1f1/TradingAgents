@@ -135,6 +135,50 @@ export type GovernanceAuditEvent = {
   created_at: string;
 };
 
+export type IdentityStatus = {
+  oidc_enabled: boolean;
+  issuer_url?: string | null;
+  authorization_endpoint?: string | null;
+  client_id?: string | null;
+  redirect_uri?: string | null;
+  scope?: string | null;
+  group_claim: string;
+  mapped_groups: string[];
+};
+
+export type IdentityUser = {
+  id: number;
+  user_id: number;
+  provider: string;
+  issuer: string;
+  subject: string;
+  email: string;
+  groups: string[];
+  created_at: string;
+  updated_at: string;
+  last_login_at: string;
+};
+
+export type RetentionResourceType = 'analyses' | 'schedules' | 'memories' | 'interventions' | 'audit_logs' | 'usage_ledger';
+export type RetentionPolicy = {
+  workspace_id: number;
+  resource_type: RetentionResourceType;
+  cutoff_before: string;
+  archive_memories?: boolean;
+  include_audit_logs?: boolean;
+  include_usage_ledger?: boolean;
+};
+export type RetentionResult = {
+  workspace_id: number;
+  resource_type: RetentionResourceType;
+  cutoff_before: string;
+  matched_count?: number;
+  affected_count?: number;
+  dry_run?: boolean;
+  applied?: boolean;
+  mode?: string;
+};
+
 const API_BASE = import.meta.env.VITE_TRADINGAGENTS_API ?? 'http://localhost:8000';
 
 async function request<T>(path: string, token: string | null, init: RequestInit = {}): Promise<T> {
@@ -159,6 +203,12 @@ export const api = {
   updateWorkspaceMember: (token: string, id: number, userId: number, role: WorkspaceRole) => request<WorkspaceMember>(`/api/workspaces/${id}/members/${userId}`, token, { method: 'PATCH', body: JSON.stringify({ role }) }),
   removeWorkspaceMember: (token: string, id: number, userId: number) => request<void>(`/api/workspaces/${id}/members/${userId}`, token, { method: 'DELETE' }),
   listGovernanceAudit: (token: string, params: Record<string, string> = {}) => request<{ items: GovernanceAuditEvent[] }>(`/api/governance/audit?${new URLSearchParams(params)}`, token),
+  oidcStatus: () => request<IdentityStatus>('/api/auth/oidc/status', null),
+  oidcCallback: (code: string, redirectUri?: string) => request<{ access_token: string; user: { email: string } }>('/api/auth/oidc/callback', null, { method: 'POST', body: JSON.stringify({ code, redirect_uri: redirectUri }) }),
+  identityStatus: (token: string) => request<IdentityStatus>('/api/identity/status', token),
+  listIdentityUsers: (token: string, params: Record<string, string> = {}) => request<{ items: IdentityUser[] }>(`/api/identity/users?${new URLSearchParams(params)}`, token),
+  retentionPreview: (token: string, payload: RetentionPolicy) => request<RetentionResult>('/api/governance/retention/preview', token, { method: 'POST', body: JSON.stringify(payload) }),
+  retentionApply: (token: string, payload: RetentionPolicy) => request<RetentionResult>('/api/governance/retention/apply', token, { method: 'POST', body: JSON.stringify(payload) }),
   createAnalysis: (token: string, payload: AnalysisParams) => request<AnalysisTask>('/api/analyses', token, { method: 'POST', body: JSON.stringify(payload) }),
   listAnalyses: (token: string, params: Record<string, string> = {}) => request<{ items: AnalysisTask[] }>(`/api/analyses?${new URLSearchParams(params)}`, token),
   getAnalysis: (token: string, id: number) => request<AnalysisTask>(`/api/analyses/${id}`, token),

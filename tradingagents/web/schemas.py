@@ -26,6 +26,11 @@ class LoginRequest(UserCreate):
     pass
 
 
+class OidcCallbackRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=2048)
+    redirect_uri: str | None = Field(default=None, max_length=512)
+
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: Literal["bearer"] = "bearer"
@@ -219,6 +224,18 @@ class WorkspaceMemberCreate(BaseModel):
 
 class WorkspaceMemberUpdate(BaseModel):
     role: WorkspaceRole
+
+
+RetentionResourceType = Literal["analyses", "schedules", "memories", "interventions", "audit_logs", "usage_ledger"]
+
+
+class RetentionPolicyRequest(BaseModel):
+    workspace_id: int
+    resource_type: RetentionResourceType
+    cutoff_before: datetime
+    archive_memories: bool = True
+    include_audit_logs: bool = False
+    include_usage_ledger: bool = False
 
 
 class EventPayload(BaseModel):

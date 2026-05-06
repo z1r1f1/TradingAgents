@@ -11,6 +11,7 @@ from .database import WebRepository
 
 MIGRATION_TABLES = [
     "users",
+    "user_identity_links",
     "workspaces",
     "workspace_members",
     "schema_migrations",

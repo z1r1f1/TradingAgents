@@ -3,6 +3,8 @@ import {
   accountExportFilename,
   buildEditableParamsFromTask,
   buildAuditQuery,
+  buildOidcAuthorizeUrl,
+  buildRetentionPolicy,
   canCreateWorkspaceResource,
   canManageWorkspaceMembers,
   formatWorkspaceRoleLabel,
@@ -203,5 +205,35 @@ describe('workspace governance frontend helpers', () => {
       event_type: 'analysis.create',
       start_at: '2026-05-01T00:00:00+00:00'
     });
+  });
+});
+
+describe('enterprise identity and retention frontend helpers', () => {
+  it('builds OIDC authorization URLs without client secrets', () => {
+    const url = buildOidcAuthorizeUrl({
+      oidc_enabled: true,
+      issuer_url: 'https://idp.example.com',
+      authorization_endpoint: 'https://idp.example.com/authorize',
+      client_id: 'tradingagents',
+      redirect_uri: 'https://app.example.com/auth/oidc/callback',
+      scope: 'openid email',
+      group_claim: 'groups',
+      mapped_groups: ['traders']
+    });
+
+    expect(url).toContain('response_type=code');
+    expect(url).toContain('client_id=tradingagents');
+    expect(url).not.toContain('secret');
+  });
+
+  it('requires explicit flags only for sensitive retention resource types', () => {
+    expect(buildRetentionPolicy(3, 'analyses', '2026-01-01T00:00:00+00:00')).toEqual({
+      workspace_id: 3,
+      resource_type: 'analyses',
+      cutoff_before: '2026-01-01T00:00:00+00:00',
+      include_audit_logs: false,
+      include_usage_ledger: false
+    });
+    expect(buildRetentionPolicy(3, 'usage_ledger', '2026-01-01T00:00:00+00:00', true).include_usage_ledger).toBe(true);
   });
 });

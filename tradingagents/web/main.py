@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Iterator
+import requests
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -20,6 +21,8 @@ from .schemas import (
     InterventionCreate,
     InterventionMessageCreate,
     LoginRequest,
+    OidcCallbackRequest,
+    RetentionPolicyRequest,
     RunDueRequest,
     ScheduledAnalysisCreate,
     ScheduledAnalysisUpdate,
@@ -228,6 +231,32 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="authentication required")
         return credentials.credentials
 
+    def oidc_discovery_url() -> str:
+        return f"{settings.oidc_issuer_url.rstrip('/')}/.well-known/openid-configuration"  # type: ignore[union-attr]
+
+    def oidc_groups_from_userinfo(userinfo: dict) -> list[str]:
+        raw_groups = userinfo.get(settings.oidc_group_claim, [])
+        if isinstance(raw_groups, str):
+            return [raw_groups]
+        if isinstance(raw_groups, list):
+            return [str(group) for group in raw_groups if str(group).strip()]
+        return []
+
+    def oidc_public_status() -> dict:
+        authorization_endpoint = settings.oidc_authorization_endpoint
+        if settings.oidc_enabled and not authorization_endpoint and settings.oidc_issuer_url:
+            authorization_endpoint = f"{settings.oidc_issuer_url.rstrip('/')}/authorize"
+        return {
+            "oidc_enabled": settings.oidc_enabled,
+            "issuer_url": settings.oidc_issuer_url if settings.oidc_enabled else None,
+            "authorization_endpoint": authorization_endpoint if settings.oidc_enabled else None,
+            "client_id": settings.oidc_client_id if settings.oidc_enabled else None,
+            "redirect_uri": settings.oidc_redirect_uri if settings.oidc_enabled else None,
+            "scope": settings.oidc_scope if settings.oidc_enabled else None,
+            "group_claim": settings.oidc_group_claim,
+            "mapped_groups": sorted(settings.oidc_group_role_mapping.keys()) if settings.oidc_enabled else [],
+        }
+
     @app.get("/health")
     @app.get("/api/health")
     def health() -> dict:
@@ -266,6 +295,72 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
         audit("auth.login.success", user_id=user["id"], resource_type="user", resource_id=user["id"], request=request)
         return {"access_token": token, "token_type": "bearer", "user": user}
 
+    @app.get("/api/auth/oidc/status")
+    def auth_oidc_status() -> dict:
+        return oidc_public_status()
+
+    @app.post("/api/auth/oidc/callback", response_model=TokenResponse)
+    def oidc_callback(payload: OidcCallbackRequest, request: Request) -> dict:
+        enforce_rate_limit("auth", request, settings.auth_rate_limit)
+        if not settings.oidc_enabled:
+            raise HTTPException(status_code=404, detail="OIDC login is disabled")
+        redirect_uri = payload.redirect_uri or settings.oidc_redirect_uri
+        if redirect_uri != settings.oidc_redirect_uri:
+            audit("auth.oidc.failure", metadata={"reason": "redirect_uri mismatch", "issuer": settings.oidc_issuer_url}, request=request)
+            raise HTTPException(status_code=400, detail="OIDC redirect_uri mismatch")
+        try:
+            discovery = requests.get(oidc_discovery_url(), timeout=10).json()
+            token_response = requests.post(
+                discovery["token_endpoint"],
+                data={
+                    "grant_type": "authorization_code",
+                    "code": payload.code,
+                    "redirect_uri": redirect_uri,
+                    "client_id": settings.oidc_client_id,
+                    "client_secret": settings.oidc_client_secret,
+                },
+                timeout=10,
+            )
+            token_response.raise_for_status()
+            token_payload = token_response.json()
+            access_token = token_payload.get("access_token")
+            if not access_token:
+                raise ValueError("missing access token")
+            userinfo_response = requests.get(
+                discovery["userinfo_endpoint"],
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=10,
+            )
+            userinfo_response.raise_for_status()
+            userinfo = userinfo_response.json()
+            subject = str(userinfo.get("sub") or "").strip()
+            email = str(userinfo.get("email") or "").strip().lower()
+            if not subject or "@" not in email:
+                raise ValueError("OIDC userinfo must include sub and email")
+            groups = oidc_groups_from_userinfo(userinfo)
+            user, action = repository.upsert_oidc_user(issuer=settings.oidc_issuer_url or "", subject=subject, email=email, groups=groups)
+            mappings = repository.apply_oidc_group_mappings(
+                user_id=user["id"],
+                groups=groups,
+                mapping=settings.oidc_group_role_mapping,
+            )
+            token = repository.create_session(user["id"])
+            audit(
+                f"auth.oidc.{action}",
+                user_id=user["id"],
+                resource_type="user",
+                resource_id=user["id"],
+                metadata={"issuer": settings.oidc_issuer_url, "subject": subject, "groups": groups, "mappings": mappings},
+                request=request,
+            )
+            audit("auth.oidc.success", user_id=user["id"], resource_type="user", resource_id=user["id"], metadata={"issuer": settings.oidc_issuer_url}, request=request)
+            return {"access_token": token, "token_type": "bearer", "user": user}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            audit("auth.oidc.failure", metadata={"reason": exc.__class__.__name__, "issuer": settings.oidc_issuer_url}, request=request)
+            raise HTTPException(status_code=401, detail="OIDC login failed") from exc
+
     @app.post("/api/auth/logout", status_code=204)
     def logout(request: Request, token: str = Depends(current_token), user: dict = Depends(current_user)) -> Response:
         repository.delete_session(token)
@@ -275,6 +370,16 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
     @app.get("/api/auth/me")
     def me(user: dict = Depends(current_user)) -> dict:
         return user
+
+    @app.get("/api/identity/status")
+    def identity_status(user: dict = Depends(current_user)) -> dict:
+        return oidc_public_status()
+
+    @app.get("/api/identity/users")
+    def identity_users(workspace_id: int | None = None, user: dict = Depends(current_user)) -> dict:
+        if workspace_id is not None:
+            require_workspace_role(user, workspace_id, {"owner", "admin"})
+        return {"items": repository.list_identity_links(workspace_id=workspace_id)}
 
     @app.get("/api/workspaces")
     def list_workspaces(user: dict = Depends(current_user)) -> dict:
@@ -459,6 +564,54 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
                 end_at=end_at,
             )
         }
+
+    def validate_retention_policy(payload: RetentionPolicyRequest) -> None:
+        if payload.resource_type == "audit_logs" and not payload.include_audit_logs:
+            raise HTTPException(status_code=400, detail="audit log retention requires explicit include_audit_logs=true")
+        if payload.resource_type == "usage_ledger" and not payload.include_usage_ledger:
+            raise HTTPException(status_code=400, detail="usage ledger retention requires explicit include_usage_ledger=true")
+
+    @app.post("/api/governance/retention/preview")
+    def retention_preview(payload: RetentionPolicyRequest, request: Request, user: dict = Depends(current_user)) -> dict:
+        require_workspace_role(user, payload.workspace_id, {"owner", "admin"})
+        validate_retention_policy(payload)
+        cutoff = payload.cutoff_before.isoformat()
+        result = repository.retention_preview(
+            workspace_id=payload.workspace_id,
+            resource_type=payload.resource_type,
+            cutoff_before=cutoff,
+        )
+        audit(
+            "retention.preview",
+            user_id=user["id"],
+            workspace_id=payload.workspace_id,
+            resource_type="retention_policy",
+            metadata={**result, "archive_memories": payload.archive_memories},
+            request=request,
+        )
+        return result
+
+    @app.post("/api/governance/retention/apply")
+    def retention_apply(payload: RetentionPolicyRequest, request: Request, user: dict = Depends(current_user)) -> dict:
+        enforce_rate_limit("mutation", request, settings.mutation_rate_limit, user)
+        require_workspace_role(user, payload.workspace_id, {"owner", "admin"})
+        validate_retention_policy(payload)
+        cutoff = payload.cutoff_before.isoformat()
+        result = repository.retention_apply(
+            workspace_id=payload.workspace_id,
+            resource_type=payload.resource_type,
+            cutoff_before=cutoff,
+            archive_memories=payload.archive_memories,
+        )
+        audit(
+            "retention.apply",
+            user_id=user["id"],
+            workspace_id=payload.workspace_id,
+            resource_type="retention_policy",
+            metadata={**result, "archive_memories": payload.archive_memories},
+            request=request,
+        )
+        return result
 
     @app.get("/api/workspaces/{workspace_id}/export")
     def export_workspace(workspace_id: int, request: Request, user: dict = Depends(current_user)) -> dict:

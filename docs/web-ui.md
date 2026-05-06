@@ -24,6 +24,11 @@ Important environment variables:
 - `TRADINGAGENTS_WEB_POSTGRES_DSN`: required in `production-cluster`; for example `postgresql://user:pass@postgres:5432/tradingagents`.
 - `TRADINGAGENTS_WEB_REDIS_URL`: required in `production-cluster`; for example `redis://redis:6379/0`.
 - `TRADINGAGENTS_WEB_COORDINATION_NAMESPACE`: Redis key prefix for rate limits, budgets, locks, and idempotency keys.
+- `TRADINGAGENTS_WEB_OIDC_ENABLED`: optional enterprise SSO switch; default `0`.
+- `TRADINGAGENTS_WEB_OIDC_ISSUER_URL`, `TRADINGAGENTS_WEB_OIDC_CLIENT_ID`, `TRADINGAGENTS_WEB_OIDC_CLIENT_SECRET`, `TRADINGAGENTS_WEB_OIDC_REDIRECT_URI`: required when OIDC is enabled.
+- `TRADINGAGENTS_WEB_OIDC_AUTHORIZATION_ENDPOINT`: optional browser authorization endpoint override; defaults to `<issuer>/authorize` for UI link generation.
+- `TRADINGAGENTS_WEB_OIDC_GROUP_CLAIM`: userinfo claim containing IdP groups; default `groups`.
+- `TRADINGAGENTS_WEB_OIDC_GROUP_ROLE_MAPPING`: JSON mapping from IdP group to workspace role, for example `{"analysts":{"workspace_id":1,"role":"member"}}`.
 
 ## Frontend setup and run
 
@@ -63,11 +68,17 @@ Public:
 - `GET /health` and `GET /api/health`
 - `POST /api/auth/register`
 - `POST /api/auth/login`
+- `GET /api/auth/oidc/status`
+- `POST /api/auth/oidc/callback`
 
 Protected:
 
 - `POST /api/auth/logout`
 - `GET /api/auth/me`
+- `GET /api/identity/status`
+- `GET /api/identity/users`
+- `POST /api/governance/retention/preview`
+- `POST /api/governance/retention/apply`
 - `POST /api/analyses`
 - `GET /api/analyses`
 - `GET /api/analyses/{task_id}`
@@ -84,7 +95,51 @@ The web runner accepts an `emit(EventPayload)` callback. Each event is persisted
 
 - Demo runner is default for safe local smoke tests. Set `TRADINGAGENTS_WEB_RUNNER=real` to invoke the existing graph and external LLM/data dependencies.
 - Background task execution uses FastAPI background tasks, not Redis/Celery.
-- No OAuth/SAML/SCIM, billing, external DB, object storage, broker integration, legal hold, or distributed scheduler is included.
+- OIDC is optional and disabled by default. Phase 9 does not include SAML, SCIM, billing, legal-hold enforcement, regulated archival attestations, broker integration, or distributed scheduler consensus.
+
+## Phase 9 enterprise identity and retention governance
+
+Phase 9 adds optional OIDC/OAuth login and workspace-scoped retention controls while preserving local username/password auth. Local auth remains enabled unless you disable registration and provision accounts separately.
+
+### OIDC login and identity mapping
+
+Enable OIDC only after configuring all required provider settings:
+
+```bash
+export TRADINGAGENTS_WEB_OIDC_ENABLED=1
+export TRADINGAGENTS_WEB_OIDC_ISSUER_URL=https://login.example.com/realms/tradingagents
+export TRADINGAGENTS_WEB_OIDC_CLIENT_ID=tradingagents-web
+export TRADINGAGENTS_WEB_OIDC_CLIENT_SECRET=...
+export TRADINGAGENTS_WEB_OIDC_REDIRECT_URI=https://tradingagents.example.com/auth/oidc/callback
+export TRADINGAGENTS_WEB_OIDC_GROUP_ROLE_MAPPING='{"analysts":{"workspace_id":1,"role":"member"},"auditors":{"workspace_id":1,"role":"viewer"}}'
+```
+
+Startup validation rejects incomplete OIDC configuration. The callback exchanges the authorization code with the IdP token endpoint, reads userinfo, provisions or links a local user by issuer+subject and normalized email, creates the normal opaque bearer session, and writes `auth.oidc.*` audit events. Audit metadata stores issuer, subject, groups, and mapping decisions; access tokens, ID tokens, client secrets, and refresh tokens are not persisted.
+
+Group mapping is intentionally conservative: IdP groups may grant `admin`, `member`, or `viewer` on configured workspace ids, but OIDC mapping does not grant `owner` and will not downgrade an existing owner. Ordinary users cannot edit mappings through the API; mappings are deployment configuration.
+
+Identity/admin APIs:
+
+- `GET /api/auth/oidc/status` — public UI-safe SSO status; no secrets.
+- `POST /api/auth/oidc/callback` — authorization-code callback body: `{"code":"...","redirect_uri":"..."}`.
+- `GET /api/identity/status` — authenticated provider status; no secrets.
+- `GET /api/identity/users?workspace_id=...` — owner/admin view of linked identities, issuer, subject, email, groups, and timestamps.
+
+### Retention preview/apply
+
+Retention controls are owner/admin-only and workspace-scoped:
+
+```bash
+POST /api/governance/retention/preview
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{"workspace_id":1,"resource_type":"analyses","cutoff_before":"2026-02-01T00:00:00+00:00"}
+```
+
+Supported `resource_type` values are `analyses`, `schedules`, `memories`, `interventions`, `audit_logs`, and `usage_ledger`. Preview returns matched row counts without mutation and writes `retention.preview` audit events. Apply deletes matching analyses, schedules, and interventions; memory retention archives by default (`archive_memories=true`) rather than deleting; every apply writes `retention.apply` audit metadata with resource type, cutoff, affected count, and mode.
+
+Audit logs and usage ledger rows are protected by explicit flags. Requests for `audit_logs` require `include_audit_logs=true`; requests for `usage_ledger` require `include_usage_ledger=true`. This keeps audit and usage history from being removed accidentally and documents that legal-hold and regulated archival policy are still external governance responsibilities.
 
 ## External-access authentication defaults
 

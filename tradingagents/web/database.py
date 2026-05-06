@@ -34,6 +34,19 @@ class WebRepository:
                     password_hash text not null,
                     created_at text not null
                 );
+                create table if not exists user_identity_links (
+                    id integer primary key autoincrement,
+                    user_id integer not null references users(id) on delete cascade,
+                    provider text not null,
+                    issuer text not null,
+                    subject text not null,
+                    email text not null,
+                    groups_json text not null,
+                    created_at text not null,
+                    updated_at text not null,
+                    last_login_at text not null,
+                    unique(provider, issuer, subject)
+                );
                 create table if not exists workspaces (
                     id integer primary key autoincrement,
                     name text not null,
@@ -266,6 +279,10 @@ class WebRepository:
                 "insert or ignore into schema_migrations(version, applied_at) values (?, ?)",
                 ("phase8-migration-usage-reconciliation", utcnow()),
             )
+            conn.execute(
+                "insert or ignore into schema_migrations(version, applied_at) values (?, ?)",
+                ("phase9-enterprise-identity-retention", utcnow()),
+            )
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
         columns = {row["name"] for row in conn.execute(f"pragma table_info({table})").fetchall()}
@@ -332,6 +349,109 @@ class WebRepository:
         with self.connect() as conn:
             row = conn.execute("select id, email, created_at from users where id = ?", (user_id,)).fetchone()
             return dict(row) if row else None
+
+    def upsert_oidc_user(self, *, issuer: str, subject: str, email: str, groups: list[str]) -> tuple[dict[str, Any], str]:
+        normalized_email = email.strip().lower()
+        now = utcnow()
+        with self.connect() as conn:
+            link = conn.execute(
+                """
+                select u.id, u.email, u.created_at
+                from user_identity_links l join users u on u.id = l.user_id
+                where l.provider = 'oidc' and l.issuer = ? and l.subject = ?
+                """,
+                (issuer, subject),
+            ).fetchone()
+        if link:
+            action = "existing"
+            user = dict(link)
+        else:
+            existing = self.get_user_by_email(normalized_email)
+            if existing:
+                action = "linked"
+                user = {"id": int(existing["id"]), "email": existing["email"], "created_at": existing["created_at"]}
+            else:
+                action = "provisioned"
+                user = self.create_user(normalized_email, new_token())
+        with self.connect() as conn:
+            conn.execute(
+                """
+                insert into user_identity_links(
+                    user_id, provider, issuer, subject, email, groups_json, created_at, updated_at, last_login_at
+                ) values (?, 'oidc', ?, ?, ?, ?, ?, ?, ?)
+                on conflict(provider, issuer, subject) do update set
+                    email = excluded.email,
+                    groups_json = excluded.groups_json,
+                    updated_at = excluded.updated_at,
+                    last_login_at = excluded.last_login_at
+                """,
+                (user["id"], issuer, subject, normalized_email, json.dumps(groups), now, now, now),
+            )
+        return user, action
+
+    def apply_oidc_group_mappings(
+        self,
+        *,
+        user_id: int,
+        groups: list[str],
+        mapping: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        applied: list[dict[str, Any]] = []
+        now = utcnow()
+        allowed_roles = {"admin", "member", "viewer"}
+        for group in groups:
+            target = mapping.get(group)
+            if not target:
+                continue
+            targets = target if isinstance(target, list) else [target]
+            for item in targets:
+                if not isinstance(item, dict):
+                    continue
+                workspace_id = item.get("workspace_id")
+                role = str(item.get("role") or "").lower()
+                if not workspace_id or role not in allowed_roles:
+                    applied.append({"group": group, "workspace_id": workspace_id, "role": role, "applied": False})
+                    continue
+                with self.connect() as conn:
+                    conn.execute(
+                        """
+                        insert into workspace_members(workspace_id, user_id, role, created_at, updated_at)
+                        values (?, ?, ?, ?, ?)
+                        on conflict(workspace_id, user_id) do update set
+                            role = case when workspace_members.role = 'owner' then workspace_members.role else excluded.role end,
+                            updated_at = excluded.updated_at
+                        """,
+                        (int(workspace_id), user_id, role, now, now),
+                    )
+                applied.append({"group": group, "workspace_id": int(workspace_id), "role": role, "applied": True})
+        return applied
+
+    def list_identity_links(self, *, workspace_id: int | None = None) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        values: list[Any] = []
+        join = "join users u on u.id = l.user_id"
+        if workspace_id is not None:
+            join += " join workspace_members wm on wm.user_id = u.id"
+            clauses.append("wm.workspace_id = ?")
+            values.append(workspace_id)
+        where = f"where {' and '.join(clauses)}" if clauses else ""
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                select l.*, u.email as user_email
+                from user_identity_links l {join}
+                {where}
+                order by l.updated_at desc, l.id desc
+                """,
+                tuple(values),
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["groups"] = json.loads(item.pop("groups_json"))
+            item["email"] = item.pop("user_email")
+            result.append(item)
+        return result
 
     def authenticate(self, email: str, password: str) -> dict[str, Any] | None:
         row = self.get_user_by_email(email)
@@ -574,6 +694,64 @@ class WebRepository:
                 tuple(values),
             ).fetchall()
         return [self._audit_log_dict(row) for row in rows]
+
+    def retention_preview(self, *, workspace_id: int, resource_type: str, cutoff_before: str) -> dict[str, Any]:
+        table, timestamp_column = self._retention_table(resource_type)
+        with self.connect() as conn:
+            count = conn.execute(
+                f"select count(*) from {table} where workspace_id = ? and {timestamp_column} < ?",
+                (workspace_id, cutoff_before),
+            ).fetchone()[0]
+        return {
+            "dry_run": True,
+            "workspace_id": workspace_id,
+            "resource_type": resource_type,
+            "cutoff_before": cutoff_before,
+            "matched_count": int(count),
+        }
+
+    def retention_apply(
+        self,
+        *,
+        workspace_id: int,
+        resource_type: str,
+        cutoff_before: str,
+        archive_memories: bool = True,
+    ) -> dict[str, Any]:
+        table, timestamp_column = self._retention_table(resource_type)
+        with self.connect() as conn:
+            if resource_type == "memories" and archive_memories:
+                cur = conn.execute(
+                    f"update {table} set archived = 1 where workspace_id = ? and {timestamp_column} < ? and archived = 0",
+                    (workspace_id, cutoff_before),
+                )
+            else:
+                cur = conn.execute(
+                    f"delete from {table} where workspace_id = ? and {timestamp_column} < ?",
+                    (workspace_id, cutoff_before),
+                )
+            affected = cur.rowcount
+        return {
+            "applied": True,
+            "workspace_id": workspace_id,
+            "resource_type": resource_type,
+            "cutoff_before": cutoff_before,
+            "affected_count": int(affected),
+            "mode": "archive" if resource_type == "memories" and archive_memories else "delete",
+        }
+
+    def _retention_table(self, resource_type: str) -> tuple[str, str]:
+        mapping = {
+            "analyses": ("analysis_tasks", "created_at"),
+            "schedules": ("schedules", "created_at"),
+            "memories": ("agent_memories", "created_at"),
+            "interventions": ("intervention_sessions", "created_at"),
+            "audit_logs": ("audit_logs", "created_at"),
+            "usage_ledger": ("usage_ledger_events", "occurred_at"),
+        }
+        if resource_type not in mapping:
+            raise ValueError("unsupported retention resource type")
+        return mapping[resource_type]
 
 
     def record_usage_ledger(

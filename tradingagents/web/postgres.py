@@ -41,6 +41,7 @@ class PgCursor:
 class PgConnection:
     ID_TABLES = {
         "users",
+        "user_identity_links",
         "workspaces",
         "audit_logs",
         "sessions",
@@ -96,6 +97,7 @@ class PostgresSchemaManager:
     def required_tables(cls) -> list[str]:
         return [
             "users",
+            "user_identity_links",
             "workspaces",
             "workspace_members",
             "schema_migrations",
@@ -156,6 +158,19 @@ class PostgresSchemaManager:
             email text not null unique,
             password_hash text not null,
             created_at text not null
+        );
+        create table if not exists user_identity_links (
+            id bigserial primary key,
+            user_id bigint not null references users(id) on delete cascade,
+            provider text not null,
+            issuer text not null,
+            subject text not null,
+            email text not null,
+            groups_json text not null,
+            created_at text not null,
+            updated_at text not null,
+            last_login_at text not null,
+            unique(provider, issuer, subject)
         );
         create table if not exists workspaces (
             id bigserial primary key,
