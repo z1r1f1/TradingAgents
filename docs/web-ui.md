@@ -2,6 +2,37 @@
 
 Phase 1 adds an authenticated FastAPI + SQLite backend and a React/Vite/TypeScript/Tailwind frontend for one-stock analysis.
 
+
+## Docker Compose deployment
+
+The Web UI can run as a two-container stack: an internal FastAPI backend plus an Nginx frontend that serves the built React app and reverse-proxies `/api/` to the backend.
+
+```bash
+cp .env.web.example .env.web.local
+python3 - <<'PY'
+import secrets
+print(secrets.token_urlsafe(48))
+PY
+# Put the generated value in TRADINGAGENTS_WEB_AUTH_SECRET and set bootstrap credentials.
+docker compose --env-file .env.web.local -f docker-compose.web.yml up -d --build
+```
+
+Key deployment notes:
+
+- `TRADINGAGENTS_WEB_HTTP_PORT` controls the host port, defaulting to `80`. Use `18080` for a non-disruptive smoke test before switching traffic.
+- `TRADINGAGENTS_WEB_ALLOW_REGISTRATION=0` is recommended for shared or internet-facing deployments; use `TRADINGAGENTS_WEB_BOOTSTRAP_EMAIL` and `TRADINGAGENTS_WEB_BOOTSTRAP_PASSWORD` for the initial admin user.
+- `TRADINGAGENTS_WEB_RUNNER=demo` avoids real provider calls. Change it to `real` only after API keys, budgets, and rate limits are configured.
+- SQLite data is stored in the named Docker volume `tradingagents-web_tradingagents_web_data`. Back it up before replacing hosts or volumes.
+- The frontend is built with an empty `VITE_TRADINGAGENTS_API`, so browser API calls use the same origin (`/api/...`) and do not require exposing the backend port directly.
+
+Useful commands:
+
+```bash
+docker compose --env-file .env.web.local -f docker-compose.web.yml ps
+docker compose --env-file .env.web.local -f docker-compose.web.yml logs -f web-api
+docker compose --env-file .env.web.local -f docker-compose.web.yml down
+```
+
 ## Backend setup and run
 
 ```bash

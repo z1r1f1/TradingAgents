@@ -121,11 +121,20 @@ pip install .
 
 ### Docker
 
-Alternatively, run with Docker:
+Run the CLI with Docker:
 ```bash
 cp .env.example .env  # add your API keys
 docker compose run --rm tradingagents
 ```
+
+Run the Web UI with Docker Compose:
+```bash
+cp .env.web.example .env.web.local
+# edit .env.web.local: set a strong auth secret, bootstrap email/password, and public CORS origin
+docker compose --env-file .env.web.local -f docker-compose.web.yml up -d --build
+```
+
+The Web UI compose stack serves the React frontend through Nginx on `${TRADINGAGENTS_WEB_HTTP_PORT:-80}` and proxies `/api/` to the FastAPI backend. The backend stores SQLite data in the `tradingagents_web_data` Docker volume and defaults to the safe `demo` runner.
 
 For local models with Ollama:
 ```bash

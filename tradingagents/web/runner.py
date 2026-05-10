@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Callable, Protocol
 
 from .schemas import AnalysisCreate, EventPayload, RunnerResult
@@ -66,7 +67,6 @@ class TradingAgentsGraphRunner:
                 "max_risk_discuss_rounds": params.research_depth,
                 "quick_think_llm": params.quick_model,
                 "deep_think_llm": params.deep_model,
-                "backend_url": params.backend_url,
                 "llm_provider": params.llm_provider.lower(),
                 "output_language": params.output_language,
                 "google_thinking_level": params.google_thinking_level,
@@ -74,6 +74,8 @@ class TradingAgentsGraphRunner:
                 "anthropic_effort": params.anthropic_effort,
             }
         )
+        if params.backend_url:
+            config["backend_url"] = params.backend_url
         graph = TradingAgentsGraph(params.analysts, config=config, debug=False)
         final_state = self._stream_graph(params, graph, emit)
         sections = self._sections_from_state(final_state)
@@ -108,9 +110,11 @@ class TradingAgentsGraphRunner:
         args = graph.propagator.get_graph_args()
         final_state: dict[str, Any] | None = None
         emitted_sections: dict[str, str] = {}
+        emitted_debate_counts: dict[str, int] = {}
         for chunk in graph.graph.stream(init_agent_state, **args):
             final_state = chunk
             self._emit_messages(chunk, emit)
+            self._emit_debate_updates(chunk, emit, emitted_debate_counts)
             self._emit_report_sections(chunk, emit, emitted_sections)
         if not final_state:
             raise RuntimeError("TradingAgents graph produced no final state")
@@ -142,6 +146,129 @@ class TradingAgentsGraphRunner:
                 name = tool_call.get("name") if isinstance(tool_call, dict) else getattr(tool_call, "name", "tool")
                 args = tool_call.get("args") if isinstance(tool_call, dict) else getattr(tool_call, "args", {})
                 emit(EventPayload(agent="Graph", event_type="tool.call", message=str(name), payload={"args": args}))
+
+    def _emit_debate_updates(self, state: dict[str, Any], emit: EventCallback, emitted_counts: dict[str, int]) -> None:
+        self._emit_debate_state(
+            debate_name="investment",
+            debate_state=state.get("investment_debate_state") or {},
+            participant_count=2,
+            emitted_counts=emitted_counts,
+            speaker_agents={
+                "Bull Analyst": "Bull Researcher",
+                "Bear Analyst": "Bear Researcher",
+            },
+            current_response_keys=["current_response"],
+            latest_speaker_key=None,
+            emit=emit,
+        )
+        self._emit_debate_state(
+            debate_name="risk",
+            debate_state=state.get("risk_debate_state") or {},
+            participant_count=3,
+            emitted_counts=emitted_counts,
+            speaker_agents={
+                "Aggressive Analyst": "Aggressive Risk Analyst",
+                "Conservative Analyst": "Conservative Risk Analyst",
+                "Neutral Analyst": "Neutral Risk Analyst",
+            },
+            current_response_keys=[
+                "current_aggressive_response",
+                "current_conservative_response",
+                "current_neutral_response",
+            ],
+            latest_speaker_key="latest_speaker",
+            emit=emit,
+        )
+
+    def _emit_debate_state(
+        self,
+        *,
+        debate_name: str,
+        debate_state: dict[str, Any],
+        participant_count: int,
+        emitted_counts: dict[str, int],
+        speaker_agents: dict[str, str],
+        current_response_keys: list[str],
+        latest_speaker_key: str | None,
+        emit: EventCallback,
+    ) -> None:
+        count = int(debate_state.get("count") or 0)
+        already_emitted = emitted_counts.get(debate_name, 0)
+        if count <= already_emitted:
+            return
+
+        turns = self._split_debate_history(str(debate_state.get("history") or ""), list(speaker_agents))
+        if len(turns) < count:
+            fallback = self._current_debate_response(debate_state, current_response_keys, latest_speaker_key)
+            if fallback:
+                turns.append(fallback)
+
+        for turn_index in range(already_emitted + 1, count + 1):
+            text = turns[turn_index - 1] if len(turns) >= turn_index else ""
+            if not text:
+                continue
+            speaker = self._speaker_from_text(text, speaker_agents) or self._speaker_from_latest_state(debate_state, latest_speaker_key, speaker_agents)
+            agent = speaker_agents.get(speaker or "", speaker or "Debate Analyst")
+            emit(
+                EventPayload(
+                    agent=agent,
+                    event_type="debate.message",
+                    message=text,
+                    payload={
+                        "debate": debate_name,
+                        "round": ((turn_index - 1) // participant_count) + 1,
+                        "turn": turn_index,
+                        "speaker": speaker or agent,
+                    },
+                )
+            )
+        emitted_counts[debate_name] = count
+
+    def _current_debate_response(
+        self,
+        debate_state: dict[str, Any],
+        current_response_keys: list[str],
+        latest_speaker_key: str | None,
+    ) -> str:
+        if latest_speaker_key:
+            latest_speaker = str(debate_state.get(latest_speaker_key) or "")
+            for key in current_response_keys:
+                response = str(debate_state.get(key) or "")
+                if response and (not latest_speaker or response.startswith(latest_speaker)):
+                    return response
+        for key in current_response_keys:
+            response = str(debate_state.get(key) or "")
+            if response:
+                return response
+        return ""
+
+    def _split_debate_history(self, history: str, speaker_names: list[str]) -> list[str]:
+        if not history.strip():
+            return []
+        speaker_pattern = "|".join(re.escape(name) for name in speaker_names)
+        matches = list(re.finditer(rf"(?m)(?:^|\n)({speaker_pattern}):", history))
+        if not matches:
+            return [history.strip()]
+        turns: list[str] = []
+        for index, match in enumerate(matches):
+            start = match.start()
+            if history[start:start + 1] == "\n":
+                start += 1
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(history)
+            turns.append(history[start:end].strip())
+        return [turn for turn in turns if turn]
+
+    def _speaker_from_text(self, text: str, speaker_agents: dict[str, str]) -> str | None:
+        for speaker in speaker_agents:
+            if text.startswith(f"{speaker}:"):
+                return speaker
+        return None
+
+    def _speaker_from_latest_state(self, debate_state: dict[str, Any], latest_speaker_key: str | None, speaker_agents: dict[str, str]) -> str | None:
+        if not latest_speaker_key:
+            return None
+        latest_speaker = str(debate_state.get(latest_speaker_key) or "")
+        return latest_speaker if latest_speaker in speaker_agents else None
 
     def _persist_core_side_effects(self, params: AnalysisCreate, graph: Any, final_state: dict[str, Any]) -> None:
         trade_date = params.analysis_date.isoformat()

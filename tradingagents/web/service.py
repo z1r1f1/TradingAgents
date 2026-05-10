@@ -7,6 +7,14 @@ from .runner import AnalysisRunner
 from .schemas import AnalysisCreate, AnalysisRerun, EventPayload
 
 
+class AnalysisCancelled(RuntimeError):
+    """Raised when a cooperative runner observes that its task was cancelled."""
+
+
+class AnalysisPaused(RuntimeError):
+    """Raised when a cooperative runner observes that its task was paused."""
+
+
 class AnalysisService:
     def __init__(self, repository: WebRepository, runner: AnalysisRunner):
         self.repository = repository
@@ -25,14 +33,25 @@ class AnalysisService:
         params = params.model_copy(update={"memory_context": memory_context})
 
         def emit(event: EventPayload) -> None:
+            status = self.repository.get_task_status(task_id)
+            if status == "cancelled":
+                raise AnalysisCancelled("analysis task was cancelled")
+            if status == "paused":
+                raise AnalysisPaused("analysis task was paused")
             self.repository.append_event(task_id, event)
 
         try:
             result = self.runner.run(params, emit)
+        except (AnalysisCancelled, AnalysisPaused):
+            return
         except Exception as exc:  # pragma: no cover - covered through API by future runner tests
+            if self.repository.get_task_status(task_id) == "cancelled":
+                return
             self.repository.append_event(task_id, EventPayload(agent="System", event_type="task.failed", message=str(exc)))
             self.repository.update_task_status(task_id, "failed", error=str(exc))
             raise
+        if self.repository.get_task_status(task_id) in {"cancelled", "paused"}:
+            return
         self.repository.save_report_sections(task_id, result.report_sections)
         self.repository.save_final_decision(task_id, result.final_decision)
         owner_id = self.repository.get_task_owner_id(task_id)

@@ -1255,6 +1255,98 @@ class WebRepository:
                 (status, utcnow(), completed_at, error, task_id),
             )
 
+    def fail_interrupted_active_tasks(self, *, reason: str = "analysis interrupted by server restart") -> int:
+        now = utcnow()
+        active_statuses = ("queued", "running", "pending")
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select id
+                from analysis_tasks
+                where status in (?, ?, ?)
+                order by id asc
+                """,
+                active_statuses,
+            ).fetchall()
+            for row in rows:
+                task_id = int(row["id"])
+                current = conn.execute("select coalesce(max(sequence), 0) from agent_event_logs where task_id = ?", (task_id,)).fetchone()[0]
+                conn.execute(
+                    """
+                    insert into agent_event_logs(task_id, sequence, agent, event_type, message, payload_json, created_at)
+                    values (?, ?, 'System', 'task.failed', ?, ?, ?)
+                    """,
+                    (task_id, int(current) + 1, reason, json.dumps({"reason": reason, "recovered_on_startup": True}), now),
+                )
+                conn.execute(
+                    "update analysis_tasks set status = 'failed', updated_at = ?, completed_at = ?, error = ? where id = ?",
+                    (now, now, reason, task_id),
+                )
+        return len(rows)
+
+    def get_task_status(self, task_id: int) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute("select status from analysis_tasks where id = ?", (task_id,)).fetchone()
+            return str(row["status"]) if row else None
+
+    def cancel_task_for_user(self, task_id: int, user_id: int, *, reason: str = "cancelled by user") -> dict[str, Any] | None:
+        now = utcnow()
+        with self.connect() as conn:
+            task = conn.execute(
+                """
+                select * from analysis_tasks t
+                where t.id = ? and (
+                    t.user_id = ?
+                    or exists (select 1 from workspace_members wm where wm.workspace_id = t.workspace_id and wm.user_id = ?)
+                )
+                """,
+                (task_id, user_id, user_id),
+            ).fetchone()
+            if not task or task["status"] not in {"queued", "running", "pending"}:
+                return None
+            conn.execute(
+                "update analysis_tasks set status = 'cancelled', updated_at = ?, completed_at = ?, error = ? where id = ?",
+                (now, now, reason, task_id),
+            )
+            current = conn.execute("select coalesce(max(sequence), 0) from agent_event_logs where task_id = ?", (task_id,)).fetchone()[0]
+            conn.execute(
+                """
+                insert into agent_event_logs(task_id, sequence, agent, event_type, message, payload_json, created_at)
+                values (?, ?, 'System', 'task.cancelled', ?, ?, ?)
+                """,
+                (task_id, int(current) + 1, reason, json.dumps({"reason": reason}), now),
+            )
+        return self.get_task_for_user(task_id, user_id)
+
+    def pause_task_for_user(self, task_id: int, user_id: int, *, reason: str = "paused by user") -> dict[str, Any] | None:
+        now = utcnow()
+        with self.connect() as conn:
+            task = conn.execute(
+                """
+                select * from analysis_tasks t
+                where t.id = ? and (
+                    t.user_id = ?
+                    or exists (select 1 from workspace_members wm where wm.workspace_id = t.workspace_id and wm.user_id = ?)
+                )
+                """,
+                (task_id, user_id, user_id),
+            ).fetchone()
+            if not task or task["status"] not in {"queued", "running", "pending"}:
+                return None
+            conn.execute(
+                "update analysis_tasks set status = 'paused', updated_at = ?, error = ? where id = ?",
+                (now, reason, task_id),
+            )
+            current = conn.execute("select coalesce(max(sequence), 0) from agent_event_logs where task_id = ?", (task_id,)).fetchone()[0]
+            conn.execute(
+                """
+                insert into agent_event_logs(task_id, sequence, agent, event_type, message, payload_json, created_at)
+                values (?, ?, 'System', 'task.paused', ?, ?, ?)
+                """,
+                (task_id, int(current) + 1, reason, json.dumps({"reason": reason}), now),
+            )
+        return self.get_task_for_user(task_id, user_id)
+
     def append_event(self, task_id: int, event: EventPayload | dict[str, Any]) -> dict[str, Any]:
         if isinstance(event, dict):
             event = EventPayload(**event)
@@ -1305,16 +1397,27 @@ class WebRepository:
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
-                select t.*, p.ticker, p.analysis_date, fd.decision
+                select t.*, p.ticker, p.analysis_date, p.payload_json, fd.decision, le.last_event_at
                 from analysis_tasks t
                 join task_parameters p on p.task_id = t.id
                 left join final_decisions fd on fd.task_id = t.id
+                left join (
+                    select task_id, max(created_at) as last_event_at
+                    from agent_event_logs
+                    group by task_id
+                ) le on le.task_id = t.id
                 where {' and '.join(clauses)}
                 order by t.created_at desc, t.id desc
                 """,
                 tuple(values),
             ).fetchall()
-        return [dict(row) for row in rows]
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            payload_json = item.pop("payload_json", None)
+            item["parameters"] = json.loads(payload_json) if payload_json else None
+            items.append(item)
+        return items
 
     def export_user_data(self, user_id: int, workspace_id: int | None = None) -> dict[str, Any]:
         analyses = [self.get_task_for_user(task["id"], user_id) for task in self.list_tasks_for_user(user_id, workspace_id)]
@@ -1363,7 +1466,9 @@ class WebRepository:
             if not task:
                 return None
             params = conn.execute("select * from task_parameters where task_id = ?", (task_id,)).fetchone()
+            last_event = conn.execute("select max(created_at) as last_event_at from agent_event_logs where task_id = ?", (task_id,)).fetchone()
             result = dict(task)
+            result["last_event_at"] = last_event["last_event_at"] if last_event else None
             if params:
                 payload = json.loads(params["payload_json"])
                 result["parameters"] = payload

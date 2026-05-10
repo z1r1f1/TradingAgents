@@ -9,6 +9,9 @@ export type AnalysisParams = {
   quick_model: string;
   deep_model: string;
   output_language: string;
+  google_thinking_level?: string | null;
+  openai_reasoning_effort?: string | null;
+  anthropic_effort?: string | null;
   memory_ids?: number[];
 };
 
@@ -23,11 +26,15 @@ export type AnalysisTask = {
   final_decision?: { decision: string; rationale: string } | null;
   report_sections?: { section_name: string; content: string }[];
   events?: AgentEvent[];
+  last_event_at?: string | null;
+  seconds_since_last_event?: number | null;
+  stale_after_seconds?: number;
+  stale?: boolean;
   attached_memories?: AgentMemory[];
   intervention_sessions?: InterventionSession[];
 };
 
-export type AgentEvent = { sequence: number; agent: string; event_type: string; message: string; created_at: string };
+export type AgentEvent = { sequence: number; agent: string; event_type: string; message: string; created_at: string; payload?: Record<string, unknown> };
 export type AgentMemory = {
   id: number;
   user_id: number;
@@ -271,6 +278,8 @@ export const api = {
   createAnalysis: (token: string, payload: AnalysisParams) => request<AnalysisTask>('/api/analyses', token, { method: 'POST', body: JSON.stringify(payload) }),
   listAnalyses: (token: string, params: Record<string, string> = {}) => request<{ items: AnalysisTask[] }>(`/api/analyses?${new URLSearchParams(params)}`, token),
   getAnalysis: (token: string, id: number) => request<AnalysisTask>(`/api/analyses/${id}`, token),
+  cancelAnalysis: (token: string, id: number) => request<AnalysisTask>(`/api/analyses/${id}/cancel`, token, { method: 'POST' }),
+  pauseAnalysis: (token: string, id: number) => request<AnalysisTask>(`/api/analyses/${id}/pause`, token, { method: 'POST' }),
   rerun: (token: string, id: number, overrides: Partial<AnalysisParams>) => request<AnalysisTask>(`/api/analyses/${id}/rerun`, token, { method: 'POST', body: JSON.stringify(overrides) }),
   deleteAnalysis: (token: string, id: number) => request<void>(`/api/analyses/${id}`, token, { method: 'DELETE' }),
   exportAccount: (token: string) => request<AccountExport>('/api/account/export', token),

@@ -32,7 +32,7 @@ describe('operator usage report helpers', () => {
     expect(summary.blockedRuns).toBe(1);
     expect(summary.duplicateSuppressions).toBe(2);
     expect(summary.blockedReasons).toEqual([{ reason: 'user budget exceeded', count: 1 }]);
-    expect(summary.warnings).toContain('Blocked real-runner attempts recorded: user budget exceeded (1).');
+    expect(summary.warnings).toContain('已记录真实 Runner 拦截：user budget exceeded (1)。');
     expect(summary.recentEvents).toHaveLength(5);
   });
 
@@ -43,9 +43,9 @@ describe('operator usage report helpers', () => {
 
     expect(summary.totalEvents).toBe(0);
     expect(summary.warnings).toEqual([
-      'Cluster runtime health is inconsistent; verify Postgres storage and Redis coordination before relying on multi-instance governance reporting.',
-      'Runtime health reported status degraded.',
-      'No governance audit events matched the current workspace and filters yet.'
+      '集群运行状态不一致；依赖多实例治理报表前，请确认 Postgres 存储与 Redis 协调均正常。',
+      '运行时健康状态：degraded。',
+      '当前工作区与筛选条件下暂无治理审计事件。'
     ]);
   });
 });

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 import sqlite3
 from pathlib import Path
 
@@ -16,7 +17,9 @@ from tradingagents.web.maintenance import (
 )
 from tradingagents.web.coordination import InMemoryCoordinator
 from tradingagents.web.database import WebRepository
-from tradingagents.web.runner import DemoAnalysisRunner
+from tradingagents.web.schemas import AnalysisCreate, EventPayload, RunnerResult
+from tradingagents.web.service import AnalysisService
+from tradingagents.web.runner import DemoAnalysisRunner, TradingAgentsGraphRunner
 from tradingagents.web.settings import WebSettings
 from tradingagents.web.usage import reconcile_usage_ledger
 
@@ -122,6 +125,10 @@ def test_history_detail_rerun_and_sse_events(tmp_path: Path):
 
     history = client.get("/api/analyses", headers=headers).json()
     assert [item["id"] for item in history["items"]] == [create["id"]]
+    assert history["items"][0]["parameters"]["ticker"] == "MSFT"
+    assert history["items"][0]["parameters"]["analysts"] == ["fundamentals"]
+    assert history["items"][0]["parameters"]["research_depth"] == 1
+    assert history["items"][0]["parameters"]["quick_model"] == "gpt-5.4-mini"
 
     events_response = client.get(f"/api/analyses/{create['id']}/events", headers=headers)
     assert events_response.status_code == 200
@@ -142,6 +149,195 @@ def test_history_detail_rerun_and_sse_events(tmp_path: Path):
     assert rerun_detail["parameters"]["ticker"] == "AAPL"
     assert rerun_detail["parameters"]["analysts"] == ["fundamentals"]
     assert rerun_detail["parameters"]["research_depth"] == 2
+
+
+def test_running_analysis_can_be_cancelled_and_reports_stale_metadata(tmp_path: Path):
+    client, db_path = make_client(tmp_path)
+    headers = login(client)
+
+    create = client.post(
+        "/api/analyses",
+        headers=headers,
+        json={
+            "ticker": "MSFT",
+            "analysis_date": "2026-05-01",
+            "analysts": ["market"],
+            "research_depth": 1,
+            "llm_provider": "openai",
+            "quick_model": "gpt-5.4-mini",
+            "deep_model": "gpt-5.5",
+            "output_language": "English",
+        },
+    ).json()
+    task_id = create["id"]
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("update analysis_tasks set status = 'running', completed_at = null, error = null where id = ?", (task_id,))
+        conn.execute("delete from final_decisions where task_id = ?", (task_id,))
+        conn.execute("delete from report_sections where task_id = ?", (task_id,))
+        conn.execute("update agent_event_logs set created_at = '2026-05-01T00:00:00+00:00' where task_id = ?", (task_id,))
+
+    stale_response = client.get(f"/api/analyses/{task_id}?stale_after_seconds=1", headers=headers)
+    assert stale_response.status_code == 200
+    stale_task = stale_response.json()
+    assert stale_task["stale"] is True
+    assert stale_task["last_event_at"] == "2026-05-01T00:00:00+00:00"
+
+    cancel = client.post(f"/api/analyses/{task_id}/cancel", headers=headers)
+    assert cancel.status_code == 200
+    cancelled = cancel.json()
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["error"] == "cancelled by user"
+    assert any(event["event_type"] == "task.cancelled" for event in cancelled["events"])
+
+    repeated = client.post(f"/api/analyses/{task_id}/cancel", headers=headers)
+    assert repeated.status_code == 409
+
+
+def test_running_analysis_can_be_paused_and_stream_ends(tmp_path: Path):
+    client, db_path = make_client(tmp_path)
+    headers = login(client)
+
+    create = client.post(
+        "/api/analyses",
+        headers=headers,
+        json={
+            "ticker": "TSLA",
+            "analysis_date": "2026-05-01",
+            "analysts": ["market", "news"],
+            "research_depth": 1,
+            "llm_provider": "openai",
+            "quick_model": "gpt-5.4-mini",
+            "deep_model": "gpt-5.5",
+            "output_language": "English",
+        },
+    ).json()
+    task_id = create["id"]
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("update analysis_tasks set status = 'running', completed_at = null, error = null where id = ?", (task_id,))
+        conn.execute("delete from final_decisions where task_id = ?", (task_id,))
+        conn.execute("delete from report_sections where task_id = ?", (task_id,))
+
+    paused = client.post(f"/api/analyses/{task_id}/pause", headers=headers)
+    assert paused.status_code == 200
+    assert paused.json()["status"] == "paused"
+    assert any(event["event_type"] == "task.paused" for event in paused.json()["events"])
+
+    repeated = client.post(f"/api/analyses/{task_id}/pause", headers=headers)
+    assert repeated.status_code == 409
+
+    events_response = client.get(f"/api/analyses/{task_id}/events", headers=headers)
+    assert events_response.status_code == 200
+    assert "event: task_event" in events_response.text
+    assert "event: end" in events_response.text
+
+
+def test_analysis_service_stops_when_task_is_paused_mid_run(tmp_path: Path):
+    db_path = tmp_path / "web.sqlite3"
+    repo = WebRepository(db_path)
+    user = repo.create_user("pause@example.com", "correct horse battery staple")
+    params = AnalysisCreate(
+        ticker="SPY",
+        analysis_date=date(2026, 5, 1),
+        analysts=["market"],
+        research_depth=1,
+        llm_provider="openai",
+        quick_model="gpt-5.4-mini",
+        deep_model="gpt-5.5",
+        output_language="English",
+    )
+    task = repo.create_task(user["id"], params)
+    task_id = task["id"]
+
+    class PausingRunner:
+        def run(self, params, emit):
+            emit(EventPayload(agent="System", event_type="task.started", message="start"))
+            repo.update_task_status(task_id, "paused")
+            emit(EventPayload(agent="Market Analyst", event_type="agent.message", message="should not persist"))
+            return RunnerResult(
+                report_sections={"market_report": "should not persist"},
+                final_decision={"decision": "HOLD", "rationale": "should not persist", "raw_decision": "HOLD"},
+            )
+
+    service = AnalysisService(repo, PausingRunner())
+    service.run_task(task_id, params)
+
+    detail = repo.get_task_for_user(task_id, user["id"])
+    assert detail["status"] == "paused"
+    assert not detail.get("report_sections")
+    assert not detail.get("final_decision")
+    assert any(event["event_type"] == "task.started" for event in detail["events"])
+    assert not any(event["message"] == "should not persist" for event in detail["events"])
+
+
+def test_graph_runner_emits_each_debate_turn_with_round_metadata():
+    runner = TradingAgentsGraphRunner()
+    events: list[EventPayload] = []
+    emitted: dict[str, int] = {}
+
+    runner._emit_debate_updates(
+        {
+            "investment_debate_state": {
+                "count": 1,
+                "current_response": "Bull Analyst: first bullish argument",
+                "history": "Bull Analyst: first bullish argument",
+            },
+            "risk_debate_state": {
+                "count": 3,
+                "latest_speaker": "Neutral Analyst",
+                "current_neutral_response": "Neutral Analyst: balanced risk view",
+                "history": "Aggressive Analyst: risk on\nConservative Analyst: risk off\nNeutral Analyst: balanced risk view",
+            },
+        },
+        events.append,
+        emitted,
+    )
+
+    assert [(event.agent, event.event_type, event.payload["round"]) for event in events] == [
+        ("Bull Researcher", "debate.message", 1),
+        ("Aggressive Risk Analyst", "debate.message", 1),
+        ("Conservative Risk Analyst", "debate.message", 1),
+        ("Neutral Risk Analyst", "debate.message", 1),
+    ]
+    assert events[0].payload["debate"] == "investment"
+    assert events[1].payload["debate"] == "risk"
+    assert events[0].message == "Bull Analyst: first bullish argument"
+    assert events[3].message == "Neutral Analyst: balanced risk view"
+
+
+def test_startup_marks_interrupted_running_analysis_failed(tmp_path: Path):
+    client, db_path = make_client(tmp_path)
+    headers = login(client)
+
+    create = client.post(
+        "/api/analyses",
+        headers=headers,
+        json={
+            "ticker": "MSFT",
+            "analysis_date": "2026-05-01",
+            "analysts": ["market"],
+            "research_depth": 1,
+            "llm_provider": "openai",
+            "quick_model": "gpt-5.4-mini",
+            "deep_model": "gpt-5.5",
+            "output_language": "English",
+        },
+    ).json()
+    task_id = create["id"]
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("update analysis_tasks set status = 'running', completed_at = null, error = null where id = ?", (task_id,))
+
+    settings = WebSettings(
+        database_path=db_path,
+        auth_secret="test-secret",
+        runner_mode="demo",
+        allow_registration=True,
+    )
+    restarted = TestClient(create_app(settings=settings, run_tasks_inline=True))
+
+    detail = restarted.get(f"/api/analyses/{task_id}", headers=headers).json()
+    assert detail["status"] == "failed"
+    assert detail["error"] == "analysis interrupted by server restart"
+    assert any(event["event_type"] == "task.failed" and "server restart" in event["message"] for event in detail["events"])
 
 
 def test_real_graph_runner_emits_progressive_events_from_stream(monkeypatch):
@@ -185,10 +381,14 @@ def test_real_graph_runner_emits_progressive_events_from_stream(monkeypatch):
                 "messages": [],
             }
 
+    from tradingagents.default_config import DEFAULT_CONFIG
+    monkeypatch.setitem(DEFAULT_CONFIG, "backend_url", "http://env-backend.example/v1")
+
     class FakeTradingAgentsGraph:
         def __init__(self, selected_analysts, config, debug=False):
             assert selected_analysts == ["market"]
             assert config["max_debate_rounds"] == 1
+            assert config["backend_url"] == "http://env-backend.example/v1"
             self.memory_log = FakeMemoryLog()
             self.propagator = FakePropagator()
             self.graph = FakeCompiledGraph()

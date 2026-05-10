@@ -3,9 +3,16 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import pandas as pd
 import yfinance as yf
-import os
 from tradingagents.utils.timezone import timestamp as local_timestamp
-from .stockstats_utils import StockstatsUtils, _clean_dataframe, yf_retry, load_ohlcv, filter_financials_by_date
+from yfinance.exceptions import YFRateLimitError
+from .stockstats_utils import (
+    StockstatsUtils,
+    _download_sina_ohlcv,
+    yf_retry,
+    load_ohlcv,
+    filter_financials_by_date,
+    missing_market_data_message,
+)
 
 def get_YFin_data_online(
     symbol: Annotated[str, "ticker symbol of the company"],
@@ -19,17 +26,23 @@ def get_YFin_data_online(
     # Create ticker object
     ticker = yf.Ticker(symbol.upper())
 
-    # Fetch historical data for the specified date range
-    data = yf_retry(lambda: ticker.history(start=start_date, end=end_date))
+    data_source = "Yahoo Finance"
+
+    # Fetch historical data for the specified date range. If Yahoo throttles
+    # the server, fall back to Sina data so a real web analysis can still progress.
+    try:
+        data = yf_retry(lambda: ticker.history(start=start_date, end=end_date))
+    except YFRateLimitError:
+        data = _download_sina_ohlcv(symbol, start_date, end_date)
+        data_source = data.attrs.get("source", "Sina fallback")
 
     # Check if data is empty
     if data.empty:
-        return (
-            f"No data found for symbol '{symbol}' between {start_date} and {end_date}"
-        )
+        data = _download_sina_ohlcv(symbol, start_date, end_date)
+        data_source = data.attrs.get("source", "Sina fallback")
 
     # Remove timezone info from index for cleaner output
-    if data.index.tz is not None:
+    if getattr(data.index, "tz", None) is not None:
         data.index = data.index.tz_localize(None)
 
     # Round numerical values to 2 decimal places for cleaner display
@@ -44,6 +57,7 @@ def get_YFin_data_online(
     # Add header information
     header = f"# Stock data for {symbol.upper()} from {start_date} to {end_date}\n"
     header += f"# Total records: {len(data)}\n"
+    header += f"# Data source: {data_source}\n"
     header += f"# Data retrieved on: {local_timestamp('%Y-%m-%d %H:%M:%S')}\n\n"
 
     return header + csv_string
@@ -142,6 +156,7 @@ def get_stock_stats_indicators_window(
     # Optimized: Get stock data once and calculate indicators for all dates
     try:
         indicator_data = _get_stock_stats_bulk(symbol, indicator, curr_date)
+        latest_available_date = max(indicator_data) if indicator_data else None
         
         # Generate the date range we need
         current_dt = curr_date_dt
@@ -154,7 +169,7 @@ def get_stock_stats_indicators_window(
             if date_str in indicator_data:
                 indicator_value = indicator_data[date_str]
             else:
-                indicator_value = "N/A: Not a trading day (weekend or holiday)"
+                indicator_value = missing_market_data_message(date_str, latest_available_date)
             
             date_values.append((date_str, indicator_value))
             current_dt = current_dt - relativedelta(days=1)

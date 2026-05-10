@@ -15,3 +15,7 @@ data
 reports
 Dockerfile
 docker-compose.yml
+frontend/node_modules
+frontend/dist
+frontend/tsconfig.tsbuildinfo
+.env.web.local

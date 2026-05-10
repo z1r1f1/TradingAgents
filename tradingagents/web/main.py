@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Iterator
+from datetime import datetime, timezone
 import requests
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -58,6 +59,13 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
     if settings.bootstrap_user_email and settings.bootstrap_user_password and not repository.get_user_by_email(settings.bootstrap_user_email):
         user = repository.create_user(settings.bootstrap_user_email, settings.bootstrap_user_password)
         repository.append_audit_log("auth.user.provisioned", user_id=user["id"], resource_type="user", resource_id=user["id"])
+    if settings.runtime_mode != "production-cluster":
+        recovered = repository.fail_interrupted_active_tasks()
+        if recovered:
+            repository.append_audit_log(
+                "analysis.recovered_interrupted",
+                metadata={"count": recovered, "reason": "analysis interrupted by server restart"},
+            )
     runner = DemoAnalysisRunner() if settings.runner_mode == "demo" else TradingAgentsGraphRunner()
     service = AnalysisService(repository, runner)
     scheduler_service = SchedulerService(service)
@@ -176,6 +184,30 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
                 request=request,
             )
             raise HTTPException(status_code=402, detail=decision.reason or "real-runner budget exceeded")
+
+    def analysis_is_active(status_value: str | None) -> bool:
+        return status_value in {"queued", "running", "pending"}
+
+    def parse_event_time(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    def annotate_analysis_runtime(task: dict, stale_after_seconds: int | None = None) -> dict:
+        threshold = stale_after_seconds if stale_after_seconds is not None else settings.analysis_stale_after_seconds
+        last_event = parse_event_time(task.get("last_event_at"))
+        seconds_since_last_event = None
+        if last_event is not None:
+            if last_event.tzinfo is None:
+                last_event = last_event.replace(tzinfo=timezone.utc)
+            seconds_since_last_event = max(0, int((datetime.now(timezone.utc) - last_event).total_seconds()))
+        task["stale_after_seconds"] = threshold
+        task["seconds_since_last_event"] = seconds_since_last_event
+        task["stale"] = bool(analysis_is_active(task.get("status")) and seconds_since_last_event is not None and seconds_since_last_event >= threshold)
+        return task
 
     def rate_identity(request: Request, user: dict | None = None) -> str:
         if user:
@@ -576,15 +608,43 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
     def list_analyses(workspace_id: int | None = None, user: dict = Depends(current_user)) -> dict:
         if workspace_id is not None:
             require_workspace_role(user, workspace_id, {"owner", "admin", "member", "viewer"})
-        return {"items": repository.list_tasks_for_user(user["id"], workspace_id)}
+        return {"items": [annotate_analysis_runtime(item) for item in repository.list_tasks_for_user(user["id"], workspace_id)]}
 
     @app.get("/api/analyses/{task_id}")
     @app.get("/api/history/{task_id}")
-    def get_analysis(task_id: int, user: dict = Depends(current_user)) -> dict:
+    def get_analysis(task_id: int, stale_after_seconds: int | None = None, user: dict = Depends(current_user)) -> dict:
         task = repository.get_task_for_user(task_id, user["id"])
         if not task:
             raise HTTPException(status_code=404, detail="analysis not found")
-        return task
+        return annotate_analysis_runtime(task, stale_after_seconds)
+
+    @app.post("/api/analyses/{task_id}/cancel")
+    def cancel_analysis(task_id: int, request: Request, user: dict = Depends(current_user)) -> dict:
+        enforce_rate_limit("mutation", request, settings.mutation_rate_limit, user)
+        current = repository.get_task_for_user(task_id, user["id"], include_detail=False)
+        if not current:
+            raise HTTPException(status_code=404, detail="analysis not found")
+        workspace_id = current.get("workspace_id")
+        require_workspace_role(user, workspace_id, {"owner", "admin", "member"})
+        task = repository.cancel_task_for_user(task_id, user["id"])
+        if not task:
+            raise HTTPException(status_code=409, detail="analysis is not running")
+        audit("analysis.cancel", user_id=user["id"], workspace_id=workspace_id, resource_type="analysis", resource_id=task_id, request=request)
+        return annotate_analysis_runtime(task)
+
+    @app.post("/api/analyses/{task_id}/pause")
+    def pause_analysis(task_id: int, request: Request, user: dict = Depends(current_user)) -> dict:
+        enforce_rate_limit("mutation", request, settings.mutation_rate_limit, user)
+        current = repository.get_task_for_user(task_id, user["id"], include_detail=False)
+        if not current:
+            raise HTTPException(status_code=404, detail="analysis not found")
+        workspace_id = current.get("workspace_id")
+        require_workspace_role(user, workspace_id, {"owner", "admin", "member"})
+        task = repository.pause_task_for_user(task_id, user["id"])
+        if not task:
+            raise HTTPException(status_code=409, detail="analysis is not running")
+        audit("analysis.pause", user_id=user["id"], workspace_id=workspace_id, resource_type="analysis", resource_id=task_id, request=request)
+        return annotate_analysis_runtime(task)
 
     @app.post("/api/analyses/{task_id}/rerun", status_code=201)
     @app.post("/api/history/{task_id}/rerun", status_code=201)
@@ -1138,7 +1198,7 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
                     if event["sequence"] > last_sequence:
                         last_sequence = event["sequence"]
                         yield f"id: {event['sequence']}\nevent: task_event\ndata: {json.dumps(event)}\n\n"
-                if current["status"] in {"completed", "failed"}:
+                if current["status"] in {"completed", "failed", "cancelled", "paused"}:
                     yield "event: end\ndata: {}\n\n"
                     return
                 time.sleep(0.25)

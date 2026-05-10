@@ -30,7 +30,7 @@ function countEvents(events: GovernanceAuditEvent[], eventType: string): number 
 
 function readBlockedReason(event: GovernanceAuditEvent): string {
   const reason = event.metadata.reason;
-  return typeof reason === 'string' && reason.trim() ? reason : 'unspecified budget block';
+  return typeof reason === 'string' && reason.trim() ? reason : '未说明的预算拦截';
 }
 
 export function summarizeGovernanceEvents(
@@ -47,17 +47,17 @@ export function summarizeGovernanceEvents(
 
   const warnings: string[] = [];
   if (showClusterRuntimeWarning) {
-    warnings.push('Cluster runtime health is inconsistent; verify Postgres storage and Redis coordination before relying on multi-instance governance reporting.');
+    warnings.push('集群运行状态不一致；依赖多实例治理报表前，请确认 Postgres 存储与 Redis 协调均正常。');
   }
   if (runtimeHealth && runtimeHealth.status !== 'ok') {
-    warnings.push(`Runtime health reported status ${runtimeHealth.status}.`);
+    warnings.push(`运行时健康状态：${runtimeHealth.status}。`);
   }
   if (blockedEvents.length > 0) {
     const reasons = [...blockedReasonCounts.entries()].map(([reason, count]) => `${reason} (${count})`).join(', ');
-    warnings.push(`Blocked real-runner attempts recorded: ${reasons}.`);
+    warnings.push(`已记录真实 Runner 拦截：${reasons}。`);
   }
   if (events.length === 0) {
-    warnings.push('No governance audit events matched the current workspace and filters yet.');
+    warnings.push('当前工作区与筛选条件下暂无治理审计事件。');
   }
 
   return {
@@ -76,8 +76,8 @@ export function summarizeGovernanceEvents(
 function formatEventMetadata(event: GovernanceAuditEvent): string {
   if (event.event_type === 'cost.blocked') return readBlockedReason(event);
   if (event.resource_type && event.resource_id) return `${event.resource_type} #${event.resource_id}`;
-  if (event.resource_id) return `resource #${event.resource_id}`;
-  return 'no extra metadata';
+  if (event.resource_id) return `资源 #${event.resource_id}`;
+  return '无附加元数据';
 }
 
 export function OperatorUsageReport({
@@ -94,22 +94,22 @@ export function OperatorUsageReport({
   return (
     <div className="space-y-3 rounded border border-slate-700 p-3">
       <div>
-        <h3 className="text-sm font-semibold text-slate-200">Operator usage report</h3>
+        <h3 className="text-sm font-semibold text-slate-200">运营用量报告</h3>
         <p className="text-xs text-slate-400">
-          Derived from <code>GET /api/governance/audit</code> and runtime health. This UI only summarizes backend APIs exposed in the current build.
+          基于 <code>GET /api/governance/audit</code> 与运行时健康状态生成；仅汇总当前版本已暴露的后端能力。
         </p>
       </div>
       <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-        <Metric label="Audit events" value={summary.totalEvents} />
-        <Metric label="Analysis launches" value={summary.analysisCreates} />
-        <Metric label="Schedule triggers" value={summary.scheduleTriggers} />
-        <Metric label="Continuation runs" value={summary.continuationRuns} />
-        <Metric label="Blocked runs" value={summary.blockedRuns} />
-        <Metric label="Duplicate suppressions" value={summary.duplicateSuppressions} />
+        <Metric label="审计事件" value={summary.totalEvents} />
+        <Metric label="分析启动" value={summary.analysisCreates} />
+        <Metric label="计划触发" value={summary.scheduleTriggers} />
+        <Metric label="延续分析" value={summary.continuationRuns} />
+        <Metric label="拦截运行" value={summary.blockedRuns} />
+        <Metric label="重复抑制" value={summary.duplicateSuppressions} />
       </div>
       {summary.blockedReasons.length ? (
         <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Blocked-run reasons</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">拦截原因</p>
           <div className="mt-2 flex flex-wrap gap-2 text-xs text-amber-200">
             {summary.blockedReasons.map(item => (
               <span key={item.reason} className="rounded border border-amber-700 bg-amber-950 px-2 py-1">
@@ -120,7 +120,7 @@ export function OperatorUsageReport({
         </div>
       ) : null}
       <div className="space-y-2">
-        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Warnings and notes</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">风险与备注</p>
         {summary.warnings.map(message => (
           <p key={message} className="rounded bg-slate-950 p-2 text-xs text-slate-300">
             {message}
@@ -128,7 +128,7 @@ export function OperatorUsageReport({
         ))}
       </div>
       <div>
-        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Recent audit events</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">最近审计事件</p>
         <div className="mt-2 max-h-40 space-y-2 overflow-auto rounded bg-slate-950 p-2 text-xs text-slate-300">
           {summary.recentEvents.map(event => (
             <div key={event.id} className="rounded border border-slate-800 p-2">
