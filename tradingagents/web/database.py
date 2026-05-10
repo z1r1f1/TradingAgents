@@ -1257,13 +1257,13 @@ class WebRepository:
 
     def fail_interrupted_active_tasks(self, *, reason: str = "analysis interrupted by server restart") -> int:
         now = utcnow()
-        active_statuses = ("queued", "running", "pending")
+        active_statuses = ("running", "pending")
         with self.connect() as conn:
             rows = conn.execute(
                 """
                 select id
                 from analysis_tasks
-                where status in (?, ?, ?)
+                where status in (?, ?)
                 order by id asc
                 """,
                 active_statuses,
@@ -1283,6 +1283,26 @@ class WebRepository:
                     (now, now, reason, task_id),
                 )
         return len(rows)
+
+    def list_queued_analysis_tasks(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select t.id, t.user_id, p.payload_json
+                from analysis_tasks t
+                join task_parameters p on p.task_id = t.id
+                where t.status = 'queued'
+                order by t.created_at asc, t.id asc
+                """
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "user_id": int(row["user_id"]),
+                "parameters": json.loads(row["payload_json"]),
+            }
+            for row in rows
+        ]
 
     def get_task_status(self, task_id: int) -> str | None:
         with self.connect() as conn:
@@ -1684,6 +1704,13 @@ class WebRepository:
             conn.execute(
                 "update schedule_executions set analysis_task_id = ?, status = ?, completed_at = ?, error = ? where id = ?",
                 (analysis_task_id, status, completed_at, error, execution_id),
+            )
+
+    def update_schedule_execution_task(self, execution_id: int, analysis_task_id: int, status: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "update schedule_executions set analysis_task_id = ?, status = ? where id = ?",
+                (analysis_task_id, status, execution_id),
             )
 
     def get_schedule_execution(self, execution_id: int) -> dict[str, Any] | None:

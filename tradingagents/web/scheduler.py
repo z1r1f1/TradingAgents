@@ -104,12 +104,47 @@ class SchedulerService:
         now: str | None = None,
     ) -> dict[str, Any]:
         started_at = now or format_iso_datetime(datetime.now(timezone.utc))
-        execution = self.repository.create_schedule_execution(schedule["id"], status="running", started_at=started_at, triggered_by=triggered_by)
+        execution = self.repository.create_schedule_execution(
+            schedule["id"],
+            status="running" if run_inline else "queued",
+            started_at=started_at,
+            triggered_by=triggered_by,
+        )
         params = self._analysis_params_for_schedule(schedule, started_at)
         try:
             task = self.analysis_service.create_analysis(user_id, params, run_inline=run_inline)
             if not run_inline:
-                self.analysis_service.run_task(task["id"], params)
+                task_id = int(task["id"])
+                execution_id = int(execution["id"])
+                self.repository.update_schedule_execution_task(execution_id, task_id, "queued")
+
+                def complete_queued_schedule(completed_task_id: int, exc: BaseException | None) -> None:
+                    completed_at = format_iso_datetime(datetime.now(timezone.utc))
+                    task_status = self.repository.get_task_status(completed_task_id)
+                    if exc is not None or task_status == "failed":
+                        self.repository.complete_schedule_execution(
+                            execution_id,
+                            completed_task_id,
+                            "failed",
+                            completed_at=completed_at,
+                            error=str(exc) if exc is not None else "analysis task failed",
+                        )
+                        return
+                    if task_status in {"cancelled", "paused"}:
+                        self.repository.complete_schedule_execution(
+                            execution_id,
+                            completed_task_id,
+                            task_status,
+                            completed_at=completed_at,
+                            error=f"analysis task was {task_status}",
+                        )
+                        return
+                    self.repository.complete_schedule_execution(execution_id, completed_task_id, "completed", completed_at=completed_at)
+                    next_run_at = compute_next_run_at(schedule["next_run_at"], schedule["interval"], after=started_at)
+                    self.repository.update_schedule_after_execution(schedule["id"], last_run_at=started_at, next_run_at=next_run_at)
+
+                self.analysis_service.enqueue_task(task_id, params, complete_queued_schedule)
+                return self.repository.get_schedule_execution(execution_id)  # type: ignore[return-value]
             completed_at = format_iso_datetime(datetime.now(timezone.utc))
             self.repository.complete_schedule_execution(execution["id"], task["id"], "completed", completed_at=completed_at)
             next_run_at = compute_next_run_at(schedule["next_run_at"], schedule["interval"], after=started_at)

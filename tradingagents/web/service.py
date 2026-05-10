@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from collections.abc import Callable
+import queue
+import threading
 from typing import Any
 
 from .database import WebRepository
@@ -15,10 +19,23 @@ class AnalysisPaused(RuntimeError):
     """Raised when a cooperative runner observes that its task was paused."""
 
 
+AnalysisCompletionCallback = Callable[[int, BaseException | None], None]
+
+
+@dataclass(frozen=True)
+class QueuedAnalysis:
+    task_id: int
+    params: AnalysisCreate
+    on_complete: AnalysisCompletionCallback | None = None
+
+
 class AnalysisService:
     def __init__(self, repository: WebRepository, runner: AnalysisRunner):
         self.repository = repository
         self.runner = runner
+        self._queue: queue.Queue[QueuedAnalysis | None] | None = None
+        self._workers: list[threading.Thread] = []
+        self._queue_lock = threading.Lock()
 
     def create_analysis(self, user_id: int, params: AnalysisCreate, *, run_inline: bool) -> dict[str, Any]:
         task = self.repository.create_task(user_id, params)
@@ -26,6 +43,62 @@ class AnalysisService:
             self.run_task(task["id"], params)
             task = self.repository.get_task_for_user(task["id"], user_id, include_detail=False) or task
         return task
+
+    def start_queue(self, *, max_workers: int = 1) -> None:
+        worker_count = max(1, max_workers)
+        with self._queue_lock:
+            if self._queue is not None:
+                return
+            self._queue = queue.Queue()
+            self._workers = [
+                threading.Thread(
+                    target=self._queue_worker,
+                    name=f"tradingagents-analysis-worker-{index + 1}",
+                    daemon=True,
+                )
+                for index in range(worker_count)
+            ]
+            for worker in self._workers:
+                worker.start()
+
+    def stop_queue(self, *, timeout: float = 5.0) -> None:
+        with self._queue_lock:
+            task_queue = self._queue
+            workers = list(self._workers)
+            if task_queue is None:
+                return
+            for _ in workers:
+                task_queue.put(None)
+            self._queue = None
+            self._workers = []
+        for worker in workers:
+            worker.join(timeout=timeout)
+
+    def enqueue_task(self, task_id: int, params: AnalysisCreate, on_complete: AnalysisCompletionCallback | None = None) -> None:
+        task_queue = self._queue
+        if task_queue is None:
+            raise RuntimeError("analysis queue has not been started")
+        task_queue.put(QueuedAnalysis(task_id=task_id, params=params, on_complete=on_complete))
+
+    def _queue_worker(self) -> None:
+        task_queue = self._queue
+        if task_queue is None:
+            return
+        while True:
+            item = task_queue.get()
+            try:
+                if item is None:
+                    return
+                exc: BaseException | None = None
+                try:
+                    if self.repository.get_task_status(item.task_id) == "queued":
+                        self.run_task(item.task_id, item.params)
+                except BaseException as error:  # pragma: no cover - run_task persists failure details
+                    exc = error
+                if item.on_complete:
+                    item.on_complete(item.task_id, exc)
+            finally:
+                task_queue.task_done()
 
     def run_task(self, task_id: int, params: AnalysisCreate) -> None:
         self.repository.update_task_status(task_id, "running")

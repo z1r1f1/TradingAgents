@@ -5,7 +5,7 @@ import time
 from collections.abc import Iterator
 from datetime import datetime, timezone
 import requests
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -92,6 +92,18 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
         return response
+
+    @app.on_event("startup")
+    def start_analysis_queue() -> None:
+        if run_tasks_inline:
+            return
+        service.start_queue(max_workers=settings.analysis_workers)
+        for queued_task in repository.list_queued_analysis_tasks():
+            service.enqueue_task(queued_task["id"], AnalysisCreate(**queued_task["parameters"]))
+
+    @app.on_event("shutdown")
+    def stop_analysis_queue() -> None:
+        service.stop_queue()
 
     def request_ip(request: Request | None) -> str | None:
         if request is None or request.client is None:
@@ -584,7 +596,6 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
     @app.post("/api/analyses", status_code=201)
     def create_analysis(
         payload: AnalysisCreate,
-        background_tasks: BackgroundTasks,
         request: Request,
         user: dict = Depends(current_user),
     ) -> dict:
@@ -599,7 +610,7 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
         repository.update_latest_usage_ledger_resource(user_id=user["id"], workspace_id=workspace_id, resource_type="analysis", resource_id=task["id"])
         audit("analysis.create", user_id=user["id"], workspace_id=workspace_id, resource_type="analysis", resource_id=task["id"], request=request)
         if not run_tasks_inline:
-            background_tasks.add_task(service.run_task, task["id"], payload)
+            service.enqueue_task(task["id"], payload)
         store_idempotent_response(idem_key, task)
         return task
 
@@ -651,7 +662,6 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
     def rerun_analysis(
         task_id: int,
         payload: AnalysisRerun,
-        background_tasks: BackgroundTasks,
         request: Request,
         user: dict = Depends(current_user),
     ) -> dict:
@@ -678,7 +688,7 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
             request=request,
         )
         if not run_tasks_inline:
-            background_tasks.add_task(service.run_task, task["id"], AnalysisCreate(**task["parameters"]))
+            service.enqueue_task(task["id"], AnalysisCreate(**task["parameters"]))
         store_idempotent_response(idem_key, task)
         return task
 

@@ -3,6 +3,9 @@ from __future__ import annotations
 from datetime import date
 import sqlite3
 from pathlib import Path
+import queue
+import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,7 +20,8 @@ from tradingagents.web.maintenance import (
 )
 from tradingagents.web.coordination import InMemoryCoordinator
 from tradingagents.web.database import WebRepository
-from tradingagents.web.schemas import AnalysisCreate, EventPayload, RunnerResult
+from tradingagents.web.schemas import AnalysisCreate, EventPayload, RunnerResult, ScheduledAnalysisCreate
+from tradingagents.web.scheduler import SchedulerService
 from tradingagents.web.service import AnalysisService
 from tradingagents.web.runner import DemoAnalysisRunner, TradingAgentsGraphRunner
 from tradingagents.web.settings import WebSettings
@@ -103,6 +107,168 @@ def test_authenticated_user_can_create_analysis_and_persist_results(tmp_path: Pa
     assert events_count >= 4
     assert final_count == 1
     assert sections_count >= 3
+
+
+def test_analysis_service_queue_runs_one_stock_at_a_time(tmp_path: Path):
+    class BlockingRunner:
+        def __init__(self) -> None:
+            self.started: queue.Queue[str] = queue.Queue()
+            self.releases: dict[str, threading.Event] = {}
+
+        def run(self, params: AnalysisCreate, emit):
+            self.releases.setdefault(params.ticker, threading.Event())
+            emit(EventPayload(agent="System", event_type="task.started", message=f"start {params.ticker}"))
+            self.started.put(params.ticker)
+            assert self.releases[params.ticker].wait(timeout=5), f"timed out waiting to release {params.ticker}"
+            emit(EventPayload(agent="System", event_type="task.completed", message=f"done {params.ticker}"))
+            return RunnerResult(
+                report_sections={"final_trade_decision": f"HOLD {params.ticker}"},
+                final_decision={"decision": "HOLD", "confidence": None, "rationale": f"HOLD {params.ticker}", "raw_decision": f"HOLD {params.ticker}"},
+            )
+
+    repo = WebRepository(tmp_path / "queue.sqlite3")
+    user = repo.create_user("queue@example.com", "correct horse battery staple")
+    runner = BlockingRunner()
+    service = AnalysisService(repo, runner)
+    params_a = AnalysisCreate(
+        ticker="AAPL",
+        analysis_date="2026-05-01",
+        analysts=["market"],
+        research_depth=1,
+        llm_provider="openai",
+        quick_model="gpt-5.4-mini",
+        deep_model="gpt-5.5",
+        output_language="English",
+    )
+    params_b = params_a.model_copy(update={"ticker": "MSFT"})
+
+    try:
+        service.start_queue(max_workers=1)
+        task_a = service.create_analysis(user["id"], params_a, run_inline=False)
+        task_b = service.create_analysis(user["id"], params_b, run_inline=False)
+        service.enqueue_task(task_a["id"], params_a)
+        service.enqueue_task(task_b["id"], params_b)
+
+        assert runner.started.get(timeout=5) == "AAPL"
+        assert repo.get_task_status(task_a["id"]) == "running"
+        assert repo.get_task_status(task_b["id"]) == "queued"
+
+        runner.releases["AAPL"].set()
+        assert runner.started.get(timeout=5) == "MSFT"
+        assert repo.get_task_status(task_a["id"]) == "completed"
+        assert repo.get_task_status(task_b["id"]) == "running"
+
+        runner.releases["MSFT"].set()
+        deadline = time.time() + 5
+        while time.time() < deadline and repo.get_task_status(task_b["id"]) != "completed":
+            time.sleep(0.05)
+        assert repo.get_task_status(task_b["id"]) == "completed"
+    finally:
+        for event in runner.releases.values():
+            event.set()
+        service.stop_queue()
+
+
+def test_create_analysis_enqueues_background_work_when_not_inline(tmp_path: Path):
+    db_path = tmp_path / "queued-api.sqlite3"
+    settings = WebSettings(
+        database_path=db_path,
+        auth_secret="test-secret",
+        runner_mode="demo",
+        allow_registration=True,
+        analysis_workers=1,
+    )
+    with TestClient(create_app(settings=settings, run_tasks_inline=False)) as client:
+        headers = login(client)
+        response = client.post(
+            "/api/analyses",
+            headers=headers,
+            json={
+                "ticker": "QQQ",
+                "analysis_date": "2026-05-01",
+                "analysts": ["market"],
+                "research_depth": 1,
+                "llm_provider": "openai",
+                "quick_model": "gpt-5.4-mini",
+                "deep_model": "gpt-5.5",
+                "output_language": "English",
+            },
+        )
+
+        assert response.status_code == 201
+        task = response.json()
+        assert task["status"] == "queued"
+
+        deadline = time.time() + 5
+        detail = client.get(f"/api/analyses/{task['id']}", headers=headers).json()
+        while time.time() < deadline and detail["status"] != "completed":
+            time.sleep(0.05)
+            detail = client.get(f"/api/analyses/{task['id']}", headers=headers).json()
+
+        assert detail["status"] == "completed"
+        assert detail["parameters"]["ticker"] == "QQQ"
+
+
+def test_schedule_trigger_uses_analysis_queue_when_not_inline(tmp_path: Path):
+    class BlockingRunner:
+        def __init__(self) -> None:
+            self.started: queue.Queue[str] = queue.Queue()
+            self.release = threading.Event()
+
+        def run(self, params: AnalysisCreate, emit):
+            emit(EventPayload(agent="System", event_type="task.started", message=f"start {params.ticker}"))
+            self.started.put(params.ticker)
+            assert self.release.wait(timeout=5), "timed out waiting to release scheduled analysis"
+            emit(EventPayload(agent="System", event_type="task.completed", message=f"done {params.ticker}"))
+            return RunnerResult(
+                report_sections={"final_trade_decision": f"HOLD {params.ticker}"},
+                final_decision={"decision": "HOLD", "confidence": None, "rationale": f"HOLD {params.ticker}", "raw_decision": f"HOLD {params.ticker}"},
+            )
+
+    repo = WebRepository(tmp_path / "schedule-queue.sqlite3")
+    user = repo.create_user("schedule-queue@example.com", "correct horse battery staple")
+    runner = BlockingRunner()
+    service = AnalysisService(repo, runner)
+    scheduler = SchedulerService(service)
+    schedule = repo.create_schedule(
+        user["id"],
+        ScheduledAnalysisCreate(
+            name="Queued schedule",
+            ticker="NVDA",
+            start_at="2026-05-01T09:30:00+00:00",
+            interval="daily",
+            analysts=["market"],
+            research_depth=1,
+            llm_provider="openai",
+            quick_model="gpt-5.4-mini",
+            deep_model="gpt-5.5",
+            output_language="English",
+        ),
+    )
+
+    try:
+        service.start_queue(max_workers=1)
+        execution = scheduler.execute_schedule(user["id"], schedule["id"], run_inline=False)
+
+        assert execution is not None
+        assert execution["status"] == "queued"
+        assert execution["analysis_task_id"] is not None
+        assert runner.started.get(timeout=5) == "NVDA"
+        assert repo.get_task_status(execution["analysis_task_id"]) == "running"
+
+        runner.release.set()
+        deadline = time.time() + 5
+        refreshed = repo.get_schedule_execution(execution["id"])
+        while time.time() < deadline and refreshed and refreshed["status"] != "completed":
+            time.sleep(0.05)
+            refreshed = repo.get_schedule_execution(execution["id"])
+
+        assert refreshed is not None
+        assert refreshed["status"] == "completed"
+        assert repo.get_task_status(execution["analysis_task_id"]) == "completed"
+    finally:
+        runner.release.set()
+        service.stop_queue()
 
 
 def test_history_detail_rerun_and_sse_events(tmp_path: Path):

@@ -33,6 +33,7 @@ class WebSettings:
     analysis_rate_limit: int = int(os.getenv("TRADINGAGENTS_WEB_ANALYSIS_RATE_LIMIT", "10"))
     intervention_rate_limit: int = int(os.getenv("TRADINGAGENTS_WEB_INTERVENTION_RATE_LIMIT", "20"))
     analysis_stale_after_seconds: int = int(os.getenv("TRADINGAGENTS_WEB_ANALYSIS_STALE_AFTER_SECONDS", "600"))
+    analysis_workers: int = int(os.getenv("TRADINGAGENTS_WEB_ANALYSIS_WORKERS", "1"))
     real_runner_user_analysis_limit: int = int(os.getenv("TRADINGAGENTS_WEB_REAL_RUNNER_USER_ANALYSIS_LIMIT", "-1"))
     real_runner_workspace_analysis_limit: int = int(os.getenv("TRADINGAGENTS_WEB_REAL_RUNNER_WORKSPACE_ANALYSIS_LIMIT", "-1"))
     real_runner_budget_period: str = os.getenv("TRADINGAGENTS_WEB_REAL_RUNNER_BUDGET_PERIOD", "never")
@@ -69,6 +70,8 @@ class WebSettings:
                 raise ValueError("production-cluster runtime requires Postgres configuration")
             if not self.redis_url:
                 raise ValueError("production-cluster runtime requires Redis configuration")
+        if self.analysis_workers < 1:
+            raise ValueError("analysis workers must be at least 1")
         if self.oidc_enabled:
             missing = [
                 name

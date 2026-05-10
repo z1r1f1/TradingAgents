@@ -47,6 +47,7 @@ Important environment variables:
 - `TRADINGAGENTS_WEB_DB`: SQLite path. Default: `~/.tradingagents/web.sqlite3`.
 - `TRADINGAGENTS_WEB_AUTH_SECRET`: reserved secret setting for future signed-token/session hardening.
 - `TRADINGAGENTS_WEB_RUNNER`: `demo` for deterministic local smoke tests; any other value uses the real graph streaming runner.
+- `TRADINGAGENTS_WEB_ANALYSIS_WORKERS`: number of background analysis workers. Default `1` runs one stock study at a time and leaves additional submissions in `queued`; increase only when provider quotas and machine resources can support concurrent research.
 - `TRADINGAGENTS_WEB_ALLOW_REGISTRATION`: set `0` to disable self-registration.
 - `TRADINGAGENTS_WEB_CORS_ORIGINS`: comma-separated frontend origins.
 - `TRADINGAGENTS_WEB_REAL_RUNNER_USER_ANALYSIS_LIMIT`: optional local cap for real-runner analysis/continuation creation per user; `-1` disables it.
@@ -125,7 +126,8 @@ The web runner accepts an `emit(EventPayload)` callback. Each event is persisted
 ## Current limitations and deferred work
 
 - Demo runner is default for safe local smoke tests. Set `TRADINGAGENTS_WEB_RUNNER=real` to invoke the existing graph and external LLM/data dependencies.
-- Background task execution uses FastAPI background tasks, not Redis/Celery.
+- Analysis creation uses a server-side task queue. With the default `TRADINGAGENTS_WEB_ANALYSIS_WORKERS=1`, submitting two stocks starts the first task and keeps the second in `queued` until the worker finishes; the UI already labels `queued` as “排队中”. Raising the worker count enables limited parallel analysis.
+- Background task execution uses the in-process analysis queue, not Redis/Celery.
 - OIDC is optional and disabled by default. Phase 9 does not include SAML, SCIM, billing, legal-hold enforcement, regulated archival attestations, broker integration, or distributed scheduler consensus.
 
 ## Phase 9 enterprise identity and retention governance

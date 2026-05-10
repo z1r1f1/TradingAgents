@@ -134,7 +134,7 @@ cp .env.web.example .env.web.local
 docker compose --env-file .env.web.local -f docker-compose.web.yml up -d --build
 ```
 
-The Web UI compose stack serves the React frontend through Nginx on `${TRADINGAGENTS_WEB_HTTP_PORT:-80}` and proxies `/api/` to the FastAPI backend. The backend stores SQLite data in the `tradingagents_web_data` Docker volume and defaults to the safe `demo` runner.
+The Web UI compose stack serves the React frontend through Nginx on `${TRADINGAGENTS_WEB_HTTP_PORT:-80}` and proxies `/api/` to the FastAPI backend. The backend stores SQLite data in the `tradingagents_web_data` Docker volume, defaults to the safe `demo` runner, and runs analysis submissions through a background queue. The default `TRADINGAGENTS_WEB_ANALYSIS_WORKERS=1` studies one stock at a time while additional submissions remain `queued`.
 
 For local models with Ollama:
 ```bash
