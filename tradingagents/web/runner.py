@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, Callable, Protocol
 
@@ -10,6 +11,42 @@ EventCallback = Callable[[EventPayload], None]
 
 class AnalysisRunner(Protocol):
     def run(self, params: AnalysisCreate, emit: EventCallback) -> RunnerResult: ...
+
+
+def _env_bool(name: str, *, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _graph_max_attempts() -> int:
+    try:
+        return max(1, int(os.getenv("TRADINGAGENTS_WEB_GRAPH_MAX_ATTEMPTS", "2")))
+    except ValueError:
+        return 2
+
+
+def _is_transient_stream_error(exc: BaseException) -> bool:
+    messages: list[str] = []
+    current: BaseException | None = exc
+    while current is not None:
+        messages.append(f"{type(current).__name__}: {current}".lower())
+        current = current.__cause__ or current.__context__
+    text = " | ".join(messages)
+    return any(
+        marker in text
+        for marker in (
+            "incomplete chunked read",
+            "peer closed connection",
+            "server disconnected",
+            "connection reset",
+            "remote protocol error",
+            "read timeout",
+            "readerror",
+            "api connection error",
+        )
+    )
 
 
 class DemoAnalysisRunner:
@@ -72,6 +109,7 @@ class TradingAgentsGraphRunner:
                 "google_thinking_level": params.google_thinking_level,
                 "openai_reasoning_effort": params.openai_reasoning_effort,
                 "anthropic_effort": params.anthropic_effort,
+                "checkpoint_enabled": _env_bool("TRADINGAGENTS_WEB_CHECKPOINT_ENABLED", default=True),
             }
         )
         if params.backend_url:
@@ -111,14 +149,51 @@ class TradingAgentsGraphRunner:
         final_state: dict[str, Any] | None = None
         emitted_sections: dict[str, str] = {}
         emitted_debate_counts: dict[str, int] = {}
-        for chunk in graph.graph.stream(init_agent_state, **args):
-            final_state = chunk
-            self._emit_messages(chunk, emit)
-            self._emit_debate_updates(chunk, emit, emitted_debate_counts)
-            self._emit_report_sections(chunk, emit, emitted_sections)
+        checkpoint_ctx = self._enable_checkpointing(params, graph, args)
+        max_attempts = _graph_max_attempts()
+        try:
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    for chunk in graph.graph.stream(init_agent_state, **args):
+                        final_state = chunk
+                        self._emit_messages(chunk, emit)
+                        self._emit_debate_updates(chunk, emit, emitted_debate_counts)
+                        self._emit_report_sections(chunk, emit, emitted_sections)
+                    break
+                except Exception as exc:
+                    if attempt >= max_attempts or not _is_transient_stream_error(exc):
+                        raise
+                    emit(
+                        EventPayload(
+                            agent="System",
+                            event_type="task.retrying",
+                            message=f"Transient upstream stream error; retrying graph ({attempt}/{max_attempts - 1}): {exc}",
+                        )
+                    )
+        finally:
+            if checkpoint_ctx is not None:
+                checkpoint_ctx.__exit__(None, None, None)
+                if hasattr(graph, "workflow"):
+                    graph.graph = graph.workflow.compile()
         if not final_state:
             raise RuntimeError("TradingAgents graph produced no final state")
         return final_state
+
+    def _enable_checkpointing(self, params: AnalysisCreate, graph: Any, args: dict[str, Any]):
+        if not getattr(graph, "config", {}).get("checkpoint_enabled"):
+            return None
+        if not hasattr(graph, "workflow"):
+            return None
+        from tradingagents.graph.checkpointer import get_checkpointer, thread_id
+
+        checkpoint_ctx = get_checkpointer(graph.config["data_cache_dir"], params.ticker)
+        saver = checkpoint_ctx.__enter__()
+        graph.graph = graph.workflow.compile(checkpointer=saver)
+        args.setdefault("config", {}).setdefault("configurable", {})["thread_id"] = thread_id(
+            params.ticker,
+            params.analysis_date.isoformat(),
+        )
+        return checkpoint_ctx
 
     def _emit_report_sections(self, state: dict[str, Any], emit: EventCallback, emitted_sections: dict[str, str]) -> None:
         for section, content in self._sections_from_state(state).items():

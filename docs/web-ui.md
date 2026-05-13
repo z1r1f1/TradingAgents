@@ -48,6 +48,8 @@ Important environment variables:
 - `TRADINGAGENTS_WEB_AUTH_SECRET`: reserved secret setting for future signed-token/session hardening.
 - `TRADINGAGENTS_WEB_RUNNER`: `demo` for deterministic local smoke tests; any other value uses the real graph streaming runner.
 - `TRADINGAGENTS_WEB_ANALYSIS_WORKERS`: number of background analysis workers. Default `1` runs one stock study at a time and leaves additional submissions in `queued`; increase only when provider quotas and machine resources can support concurrent research.
+- `TRADINGAGENTS_WEB_GRAPH_MAX_ATTEMPTS`: maximum attempts for one real graph run when an upstream streaming transport error occurs. Default `2`.
+- `TRADINGAGENTS_WEB_CHECKPOINT_ENABLED`: enables LangGraph checkpoints for web real runs so a retry or rerun can resume from the last completed graph node. Default `1`.
 - `TRADINGAGENTS_WEB_ALLOW_REGISTRATION`: set `0` to disable self-registration.
 - `TRADINGAGENTS_WEB_CORS_ORIGINS`: comma-separated frontend origins.
 - `TRADINGAGENTS_WEB_REAL_RUNNER_USER_ANALYSIS_LIMIT`: optional local cap for real-runner analysis/continuation creation per user; `-1` disables it.

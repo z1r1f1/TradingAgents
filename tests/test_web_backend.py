@@ -595,6 +595,70 @@ def test_real_graph_runner_emits_progressive_events_from_stream(monkeypatch):
     assert result.report_sections["market_report"] == "market report final"
 
 
+def test_real_graph_runner_retries_transient_incomplete_chunked_stream(monkeypatch):
+    """A transient upstream chunked-read failure should retry the graph stream once."""
+
+    import tradingagents.graph.trading_graph as trading_graph_module
+
+    emitted: list[EventPayload] = []
+    attempts = {"count": 0}
+
+    class FakeMemoryLog:
+        def get_past_context(self, ticker):
+            return ""
+
+    class FakePropagator:
+        def create_initial_state(self, ticker, analysis_date, past_context=None):
+            return {"ticker": ticker, "analysis_date": analysis_date, "past_context": past_context}
+
+        def get_graph_args(self):
+            return {}
+
+    class FakeCompiledGraph:
+        def stream(self, initial_state, **kwargs):
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                yield {"market_report": "partial market report", "messages": []}
+                raise RuntimeError("peer closed connection without sending complete message body (incomplete chunked read)")
+            yield {
+                "market_report": "final market report",
+                "investment_plan": "final research plan",
+                "trader_investment_plan": "final trader plan",
+                "final_trade_decision": "HOLD SPY after retry",
+                "messages": [],
+            }
+
+    class FakeTradingAgentsGraph:
+        def __init__(self, selected_analysts, config, debug=False):
+            self.config = config
+            self.memory_log = FakeMemoryLog()
+            self.propagator = FakePropagator()
+            self.graph = FakeCompiledGraph()
+            self.curr_state = None
+
+        def process_signal(self, raw_signal):
+            return "HOLD"
+
+    monkeypatch.setattr(trading_graph_module, "TradingAgentsGraph", FakeTradingAgentsGraph)
+
+    params = AnalysisCreate(
+        ticker="SPY",
+        analysis_date="2026-05-01",
+        analysts=["market"],
+        research_depth=1,
+        llm_provider="openai",
+        quick_model="gpt-5.4-mini",
+        deep_model="gpt-5.5",
+        output_language="English",
+    )
+
+    result = TradingAgentsGraphRunner().run(params, emitted.append)
+
+    assert attempts["count"] == 2
+    assert result.final_decision["decision"] == "HOLD"
+    assert any(event.event_type == "task.retrying" for event in emitted)
+
+
 def test_schedule_crud_manual_trigger_and_owner_isolation(tmp_path: Path):
     client, db_path = make_client(tmp_path)
     headers = login(client)
