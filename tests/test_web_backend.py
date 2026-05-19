@@ -109,6 +109,85 @@ def test_authenticated_user_can_create_analysis_and_persist_results(tmp_path: Pa
     assert sections_count >= 3
 
 
+def test_stock_search_normalizes_eastmoney_a_share_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    client, _ = make_client(tmp_path)
+    headers = login(client)
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "QuotationCodeTable": {
+                    "Data": [
+                        {
+                            "Code": "603386",
+                            "Name": "骏亚科技",
+                            "PinYin": "JYKJ",
+                            "MktNum": "1",
+                            "SecurityTypeName": "沪A",
+                            "Classify": "AStock",
+                        },
+                        {
+                            "Code": "000767",
+                            "Name": "晋控电力",
+                            "PinYin": "JKDL",
+                            "MktNum": "0",
+                            "SecurityTypeName": "深A",
+                            "Classify": "AStock",
+                        },
+                    ]
+                }
+            }
+
+    def fake_get(url: str, **kwargs):
+        assert url == "https://searchapi.eastmoney.com/api/suggest/get"
+        assert kwargs["params"]["input"] == "骏亚"
+        assert kwargs["params"]["type"] == "14"
+        return FakeResponse()
+
+    monkeypatch.setattr(web_main.requests, "get", fake_get)
+
+    response = client.get("/api/stock-search", headers=headers, params={"query": "骏亚"})
+
+    assert response.status_code == 200
+    assert response.json()["items"] == [
+        {"code": "603386", "name": "骏亚科技", "ticker": "603386.SS", "market": "沪A", "pinyin": "JYKJ"},
+        {"code": "000767", "name": "晋控电力", "ticker": "000767.SZ", "market": "深A", "pinyin": "JKDL"},
+    ]
+
+
+def test_analysis_preserves_optional_stock_name_for_history(tmp_path: Path):
+    client, _ = make_client(tmp_path)
+    headers = login(client)
+
+    response = client.post(
+        "/api/analyses",
+        headers=headers,
+        json={
+            "ticker": "603386.SS",
+            "ticker_name": "骏亚科技",
+            "analysis_date": "2026-05-01",
+            "analysts": ["market"],
+            "research_depth": 1,
+            "llm_provider": "openai",
+            "quick_model": "gpt-5.4-mini",
+            "deep_model": "gpt-5.5",
+            "output_language": "中文",
+        },
+    )
+
+    assert response.status_code == 201
+    task = response.json()
+    assert task["ticker_name"] == "骏亚科技"
+    assert task["parameters"]["ticker_name"] == "骏亚科技"
+
+    history = client.get("/api/analyses", headers=headers).json()["items"]
+    assert history[0]["ticker_name"] == "骏亚科技"
+    assert history[0]["parameters"]["ticker_name"] == "骏亚科技"
+
+
 def test_analysis_service_queue_runs_one_stock_at_a_time(tmp_path: Path):
     class BlockingRunner:
         def __init__(self) -> None:

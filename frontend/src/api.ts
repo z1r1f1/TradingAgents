@@ -1,6 +1,7 @@
 export type AnalysisParams = {
   workspace_id?: number | null;
   ticker: string;
+  ticker_name?: string | null;
   analysis_date: string;
   analysts: string[];
   research_depth: number;
@@ -20,6 +21,7 @@ export type AnalysisTask = {
   workspace_id?: number | null;
   status: string;
   ticker?: string;
+  ticker_name?: string | null;
   analysis_date?: string;
   decision?: string | null;
   parameters?: AnalysisParams;
@@ -32,6 +34,14 @@ export type AnalysisTask = {
   stale?: boolean;
   attached_memories?: AgentMemory[];
   intervention_sessions?: InterventionSession[];
+};
+
+export type StockSearchSuggestion = {
+  code: string;
+  name: string;
+  ticker: string;
+  market: string;
+  pinyin?: string;
 };
 
 export type AgentEvent = { sequence: number; agent: string; event_type: string; message: string; created_at: string; payload?: Record<string, unknown> };
@@ -276,6 +286,7 @@ export const api = {
   releaseLegalHold: (token: string, workspaceId: number, holdId: number, reason: string) => request<LegalHold>(`/api/governance/legal-holds/${holdId}/release?${new URLSearchParams({ workspace_id: String(workspaceId) })}`, token, { method: 'POST', body: JSON.stringify({ reason }) }),
   complianceExport: (token: string, workspaceId: number) => request<ComplianceExport>(`/api/governance/compliance-export?${new URLSearchParams({ workspace_id: String(workspaceId) })}`, token),
   createAnalysis: (token: string, payload: AnalysisParams) => request<AnalysisTask>('/api/analyses', token, { method: 'POST', body: JSON.stringify(payload) }),
+  searchStocks: (token: string, query: string) => request<{ items: StockSearchSuggestion[] }>(`/api/stock-search?${new URLSearchParams({ query })}`, token),
   listAnalyses: (token: string, params: Record<string, string> = {}) => request<{ items: AnalysisTask[] }>(`/api/analyses?${new URLSearchParams(params)}`, token),
   getAnalysis: (token: string, id: number) => request<AnalysisTask>(`/api/analyses/${id}`, token),
   cancelAnalysis: (token: string, id: number) => request<AnalysisTask>(`/api/analyses/${id}/cancel`, token, { method: 'POST' }),

@@ -44,6 +44,35 @@ from .settings import WebSettings
 
 security = HTTPBearer(auto_error=False)
 
+EASTMONEY_STOCK_SEARCH_URL = "https://searchapi.eastmoney.com/api/suggest/get"
+
+
+def normalize_eastmoney_stock_suggestions(payload: dict, *, limit: int = 8) -> list[dict]:
+    rows = payload.get("QuotationCodeTable", {}).get("Data", [])
+    suggestions: list[dict] = []
+    market_suffix = {"1": ".SS", "0": ".SZ"}
+    for row in rows:
+        code = str(row.get("Code") or "").strip()
+        name = str(row.get("Name") or "").strip()
+        mkt_num = str(row.get("MktNum") or "").strip()
+        suffix = market_suffix.get(mkt_num)
+        if not code or not name or not suffix:
+            continue
+        if row.get("Classify") and row.get("Classify") != "AStock":
+            continue
+        suggestions.append(
+            {
+                "code": code,
+                "name": name,
+                "ticker": f"{code}{suffix}",
+                "market": str(row.get("SecurityTypeName") or ("沪A" if suffix == ".SS" else "深A")),
+                "pinyin": str(row.get("PinYin") or ""),
+            }
+        )
+        if len(suggestions) >= limit:
+            break
+    return suggestions
+
 
 def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = False, coordinator=None) -> FastAPI:
     settings = settings or WebSettings()
@@ -592,6 +621,23 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
             raise HTTPException(status_code=409, detail="workspace member cannot be removed")
         audit("workspace.member.remove", user_id=user["id"], workspace_id=workspace_id, resource_type="workspace_member", resource_id=member_user_id, request=request)
         return Response(status_code=204)
+
+    @app.get("/api/stock-search")
+    def search_stocks(query: str = "", user: dict = Depends(current_user)) -> dict:
+        del user
+        query = query.strip()
+        if not query:
+            return {"items": []}
+        try:
+            response = requests.get(
+                EASTMONEY_STOCK_SEARCH_URL,
+                params={"input": query, "type": "14"},
+                timeout=8,
+            )
+            response.raise_for_status()
+            return {"items": normalize_eastmoney_stock_suggestions(response.json())}
+        except Exception:
+            return {"items": []}
 
     @app.post("/api/analyses", status_code=201)
     def create_analysis(

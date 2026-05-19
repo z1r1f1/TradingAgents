@@ -1436,6 +1436,7 @@ class WebRepository:
             item = dict(row)
             payload_json = item.pop("payload_json", None)
             item["parameters"] = json.loads(payload_json) if payload_json else None
+            item["ticker_name"] = item["parameters"].get("ticker_name") if item["parameters"] else None
             items.append(item)
         return items
 
@@ -1492,6 +1493,9 @@ class WebRepository:
             if params:
                 payload = json.loads(params["payload_json"])
                 result["parameters"] = payload
+                result["ticker"] = params["ticker"]
+                result["analysis_date"] = params["analysis_date"]
+                result["ticker_name"] = payload.get("ticker_name")
             if include_detail:
                 events = conn.execute("select * from agent_event_logs where task_id = ? order by sequence", (task_id,)).fetchall()
                 sections = conn.execute("select section_name, content from report_sections where task_id = ? order by id", (task_id,)).fetchall()

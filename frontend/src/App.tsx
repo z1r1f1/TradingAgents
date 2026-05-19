@@ -10,6 +10,7 @@ import {
   Schedule,
   ScheduleInterval,
   SchedulePayload,
+  StockSearchSuggestion,
   Workspace,
   WorkspaceRole,
   RuntimeHealth,
@@ -168,9 +169,26 @@ export function filterAnalysisHistory(
   const analysisDate = filters.analysisDate?.trim();
   return items.filter(item => {
     const itemTicker = (item.ticker ?? item.parameters?.ticker ?? '').toUpperCase();
+    const itemTickerName = (item.ticker_name ?? item.parameters?.ticker_name ?? '').toUpperCase();
     const itemDate = item.analysis_date ?? item.parameters?.analysis_date ?? '';
-    return (!ticker || itemTicker.includes(ticker)) && (!analysisDate || itemDate === analysisDate);
+    return (!ticker || itemTicker.includes(ticker) || itemTickerName.includes(ticker)) && (!analysisDate || itemDate === analysisDate);
   });
+}
+
+export function buildAnalysisTickerLabel(task: AnalysisTask): string {
+  const ticker = (task.ticker ?? task.parameters?.ticker ?? '').trim();
+  const name = (task.ticker_name ?? task.parameters?.ticker_name ?? '').trim();
+  if (name && ticker) return `${name} · ${ticker}`;
+  return ticker || name || '未知股票';
+}
+
+export function formatStockSearchSuggestionLabel(suggestion: StockSearchSuggestion): string {
+  return [suggestion.name, suggestion.ticker, suggestion.market].filter(Boolean).join(' · ');
+}
+
+export function getAshareTickerSearchCode(ticker: string): string | null {
+  const match = ticker.trim().toUpperCase().match(/^(\d{6})(?:\.(SS|SZ))?$/);
+  return match ? match[1] : null;
 }
 
 export function getRecentAnalyzedTickers(items: AnalysisTask[], limit = 12): string[] {
@@ -1413,8 +1431,11 @@ function App() {
   const [selectedReportSectionName, setSelectedReportSectionName] = useState<string | null>(null);
   const [streamingTaskId, setStreamingTaskId] = useState<number | null>(null);
   const [tickerDropdownOpen, setTickerDropdownOpen] = useState(false);
+  const [stockSearchSuggestions, setStockSearchSuggestions] = useState<StockSearchSuggestion[]>([]);
+  const [stockSearchLoading, setStockSearchLoading] = useState(false);
   const selectedTaskIdRef = useRef<number | null>(null);
   const tickerTouchedRef = useRef(false);
+  const stockNameCacheRef = useRef<Record<string, string>>({});
 
   const authenticated = Boolean(token);
   const activePageMeta = getWorkspacePageMeta(activePage) ?? workspacePages[0];
@@ -1427,6 +1448,7 @@ function App() {
     () => filterRecentTickerSuggestions(recentAnalyzedTickers, params.ticker),
     [recentAnalyzedTickers, params.ticker]
   );
+  const stockSearchQuery = params.ticker.trim();
   const memoryFilterOptions = useMemo(() => getMemoryFilterOptions(memories), [memories]);
   const visibleMemories = useMemo(
     () => filterMemoriesForView(memories, { ticker: memoryTickerFilter, analysisDate: memoryDateFilter, agentName: memoryAgentFilter }),
@@ -1466,6 +1488,70 @@ function App() {
       void api.health().then(setRuntimeHealth).catch(() => setRuntimeHealth(null));
     }
   }, [token]);
+
+  useEffect(() => {
+    if (!token || !stockSearchQuery) {
+      setStockSearchSuggestions([]);
+      setStockSearchLoading(false);
+      return;
+    }
+    let active = true;
+    setStockSearchLoading(true);
+    const timer = window.setTimeout(() => {
+      api.searchStocks(token, stockSearchQuery)
+        .then(result => {
+          if (active) setStockSearchSuggestions(result.items);
+        })
+        .catch(() => {
+          if (active) setStockSearchSuggestions([]);
+        })
+        .finally(() => {
+          if (active) setStockSearchLoading(false);
+        });
+    }, 180);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [stockSearchQuery, token]);
+
+  useEffect(() => {
+    if (!token || !history.length) return;
+    const tickers = Array.from(new Set(history
+      .filter(item => !(item.ticker_name ?? item.parameters?.ticker_name))
+      .map(item => (item.ticker ?? item.parameters?.ticker ?? '').trim().toUpperCase())
+      .filter(ticker => ticker && getAshareTickerSearchCode(ticker) && stockNameCacheRef.current[ticker] === undefined)
+    )).slice(0, 8);
+    if (!tickers.length) return;
+    let active = true;
+    Promise.all(tickers.map(async ticker => {
+      try {
+        const code = getAshareTickerSearchCode(ticker);
+        if (!code) return [ticker, ''] as const;
+        const result = await api.searchStocks(token, code);
+        const match = result.items.find(item => item.ticker.toUpperCase() === ticker) ?? result.items[0];
+        return [ticker, match?.name ?? ''] as const;
+      } catch {
+        return [ticker, ''] as const;
+      }
+    })).then(entries => {
+      if (!active) return;
+      const names = Object.fromEntries(entries);
+      for (const [ticker, name] of entries) stockNameCacheRef.current[ticker] = name;
+      if (!Object.values(names).some(Boolean)) return;
+      const applyName = (task: AnalysisTask): AnalysisTask => {
+        const ticker = (task.ticker ?? task.parameters?.ticker ?? '').trim().toUpperCase();
+        const name = names[ticker];
+        if (!name || task.ticker_name || task.parameters?.ticker_name) return task;
+        return { ...task, ticker_name: name, parameters: task.parameters ? { ...task.parameters, ticker_name: name } : task.parameters };
+      };
+      setHistory(current => current.map(applyName));
+      setSelected(current => current ? applyName(current) : current);
+    });
+    return () => {
+      active = false;
+    };
+  }, [history, token]);
 
   useEffect(() => {
     if (token && selectedWorkspaceId) {
@@ -1548,14 +1634,20 @@ function App() {
 
   function updateTickerInput(value: string) {
     tickerTouchedRef.current = true;
-    setParams(current => ({ ...current, ticker: value.toUpperCase() }));
+    setParams(current => ({ ...current, ticker: value.toUpperCase(), ticker_name: null }));
     setTickerDropdownOpen(true);
   }
 
   function chooseTickerSuggestion(ticker: string) {
     if (!ticker) return;
     tickerTouchedRef.current = true;
-    setParams(current => ({ ...current, ticker }));
+    setParams(current => ({ ...current, ticker, ticker_name: null }));
+    setTickerDropdownOpen(false);
+  }
+
+  function chooseStockSearchSuggestion(suggestion: StockSearchSuggestion) {
+    tickerTouchedRef.current = true;
+    setParams(current => ({ ...current, ticker: suggestion.ticker, ticker_name: suggestion.name }));
     setTickerDropdownOpen(false);
   }
 
@@ -2053,11 +2145,11 @@ function App() {
 	                <CardTitle><PlayCircle className="mr-2 inline text-cyan-600"/>发起股票分析</CardTitle>
 	                <div className="space-y-4">
 	                  <div className="grid grid-cols-2 gap-3">
-	                    <Field label="股票代码" hint="点击输入框展开最近分析股票；输入时会模糊匹配">
+	                    <Field label="股票代码" hint="输入 A 股名称或代码会模糊匹配；选择后自动填入标准股票代码">
 	                      <div className="relative space-y-2">
 	                        <input
 	                          className={inputClass}
-	                          placeholder="例如 AAPL、600330.SS"
+	                          placeholder="例如 宁德时代、骏亚科技、600330"
 	                          value={params.ticker}
 	                          aria-haspopup="listbox"
 	                          aria-expanded={tickerDropdownOpen}
@@ -2066,18 +2158,37 @@ function App() {
 	                          onBlur={() => window.setTimeout(() => setTickerDropdownOpen(false), 120)}
 	                          onChange={e => updateTickerInput(e.target.value)}
 	                        />
-	                        {recentAnalyzedTickers.length && tickerDropdownOpen ? (
+	                        {(stockSearchSuggestions.length || recentAnalyzedTickers.length || stockSearchLoading) && tickerDropdownOpen ? (
 	                          <div
 	                            className="absolute z-40 mt-1 w-full overflow-hidden rounded-2xl border border-cyan-100 bg-white shadow-2xl shadow-slate-200/90"
 	                            role="listbox"
-	                            aria-label="最近分析股票下拉选择"
+	                            aria-label="股票搜索与最近分析下拉选择"
 	                            onMouseDown={event => event.preventDefault()}
 	                          >
 	                            <div className="flex items-center justify-between gap-2 border-b border-slate-100 bg-slate-50 px-3 py-2">
-	                              <span className="text-xs font-semibold text-slate-500">{params.ticker.trim() ? '匹配最近股票' : '最近分析股票'}</span>
-	                              <span className="text-xs text-slate-400">{tickerSuggestions.length} / {recentAnalyzedTickers.length}</span>
+	                              <span className="text-xs font-semibold text-slate-500">{params.ticker.trim() ? 'A 股搜索结果' : '最近分析股票'}</span>
+	                              <span className="text-xs text-slate-400">{stockSearchLoading ? '搜索中…' : `${stockSearchSuggestions.length} 个匹配`}</span>
 	                            </div>
-	                            {tickerSuggestions.length ? (
+	                            {stockSearchSuggestions.length ? (
+	                              <div className="max-h-56 overflow-auto p-2">
+	                                {stockSearchSuggestions.map(suggestion => (
+	                                  <button
+	                                    key={suggestion.ticker}
+	                                    type="button"
+	                                    role="option"
+	                                    aria-selected={params.ticker.toUpperCase() === suggestion.ticker}
+	                                    className={`mb-1 flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2 text-left text-sm font-semibold transition last:mb-0 ${params.ticker.toUpperCase() === suggestion.ticker ? 'bg-cyan-50 text-cyan-700' : 'text-slate-700 hover:bg-cyan-50 hover:text-cyan-700'}`}
+	                                    onClick={() => chooseStockSearchSuggestion(suggestion)}
+	                                  >
+	                                    <span className="min-w-0">
+	                                      <span className="block truncate">{formatStockSearchSuggestionLabel(suggestion)}</span>
+	                                      {suggestion.pinyin && <span className="block text-[11px] font-normal text-slate-400">{suggestion.pinyin}</span>}
+	                                    </span>
+	                                    <span className="shrink-0 text-xs font-normal text-slate-400">A 股</span>
+	                                  </button>
+	                                ))}
+	                              </div>
+	                            ) : tickerSuggestions.length ? (
 	                              <div className="max-h-56 overflow-auto p-2">
 	                                {tickerSuggestions.map(ticker => (
 	                                  <button
@@ -2094,7 +2205,7 @@ function App() {
 	                                ))}
 	                              </div>
 	                            ) : (
-	                              <p className="p-3 text-xs text-slate-400">没有匹配的最近股票，仍可直接输入新股票代码。</p>
+	                              <p className="p-3 text-xs text-slate-400">{stockSearchLoading ? '正在查询 A 股代码…' : '没有匹配的 A 股或最近股票，仍可直接输入标准股票代码。'}</p>
 	                            )}
 	                          </div>
 	                        ) : null}
@@ -2211,11 +2322,11 @@ function App() {
             <Card>
               <CardTitle><History className="mr-2 inline text-cyan-600"/>分析历史</CardTitle>
               <div className="mb-4 grid gap-3 md:grid-cols-[1fr_220px_auto]">
-                <input className={inputClass} placeholder="按股票代码筛选，例如 AAPL 或 600330" value={historyTickerFilter} onChange={e => setHistoryTickerFilter(e.target.value.toUpperCase())} />
+                <input className={inputClass} placeholder="按股票名称或代码筛选，例如 骏亚科技、AAPL 或 600330" value={historyTickerFilter} onChange={e => setHistoryTickerFilter(e.target.value.toUpperCase())} />
                 <input className={inputClass} type="date" value={historyDateFilter} onChange={e => setHistoryDateFilter(e.target.value)} />
                 <Button className="bg-slate-100 text-slate-900 hover:bg-slate-200" onClick={() => { setHistoryTickerFilter(''); setHistoryDateFilter(''); }}>清空筛选</Button>
               </div>
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{filteredHistory.map(item => <button key={item.id} onClick={() => { void loadTask(item.id); setActivePage('analysis'); }} className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 text-left transition hover:-translate-y-0.5 hover:border-cyan-300 hover:bg-cyan-50"><div className="flex items-center justify-between gap-3"><strong className="text-slate-950">#{item.id} {item.ticker ?? item.parameters?.ticker}</strong><StatusBadge status={item.status} /></div><p className="mt-2 text-sm text-slate-400">{item.analysis_date ?? item.parameters?.analysis_date} · {formatDecisionLabel(item.decision ?? '暂无结论')}</p><p className="mt-3 rounded-xl bg-white/80 p-3 text-xs leading-5 text-slate-500">{buildAnalysisParameterSummary(item)}</p><span className="mt-3 inline-block rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-800" onClick={event => { event.stopPropagation(); void loadTaskParameters(item.id); setActivePage('analysis'); }}>载入/编辑参数</span></button>)}</div>
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{filteredHistory.map(item => <button key={item.id} onClick={() => { void loadTask(item.id); setActivePage('analysis'); }} className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 text-left transition hover:-translate-y-0.5 hover:border-cyan-300 hover:bg-cyan-50"><div className="flex items-center justify-between gap-3"><strong className="text-slate-950">#{item.id} {buildAnalysisTickerLabel(item)}</strong><StatusBadge status={item.status} /></div><p className="mt-2 text-sm text-slate-400">{item.analysis_date ?? item.parameters?.analysis_date} · {formatDecisionLabel(item.decision ?? '暂无结论')}</p><p className="mt-3 rounded-xl bg-white/80 p-3 text-xs leading-5 text-slate-500">{buildAnalysisParameterSummary(item)}</p><span className="mt-3 inline-block rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-800" onClick={event => { event.stopPropagation(); void loadTaskParameters(item.id); setActivePage('analysis'); }}>载入/编辑参数</span></button>)}</div>
               {!filteredHistory.length && <EmptyState title="暂无匹配历史" description="调整股票代码或日期筛选，或先完成一次股票分析。" />}
             </Card>
           )}

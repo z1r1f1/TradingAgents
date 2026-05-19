@@ -10,6 +10,7 @@ import {
   buildAuditQuery,
   buildOidcAuthorizeUrl,
   buildAnalysisParameterSummary,
+  buildAnalysisTickerLabel,
   buildMemoryPreviewText,
   buildStaleAnalysisWarning,
   deriveAnalysisStatusFromEvent,
@@ -20,9 +21,11 @@ import {
   filterMemoriesForView,
   filterAnalysisHistory,
   filterRecentTickerSuggestions,
+  formatStockSearchSuggestionLabel,
   flattenMemoryDateGroupMemories,
   getRecentAnalyzedTickers,
   getDefaultTickerFromHistory,
+  getAshareTickerSearchCode,
   getDefaultReportSectionName,
   getMemoryFilterOptions,
   getRecoverableAnalysisTaskId,
@@ -50,7 +53,7 @@ import {
   toggleAnalystSelection,
   workspacePages
 } from './App';
-import type { AnalysisParams, AnalysisTask } from './api';
+import type { AnalysisParams, AnalysisTask, StockSearchSuggestion } from './api';
 
 const defaultParamsForTest: AnalysisParams = {
   ticker: 'SPY',
@@ -165,6 +168,37 @@ describe('TradingAgents web frontend', () => {
     expect(filterRecentTickerSuggestions(['000925.SZ', 'AAPL', '600330.SS', 'MSFT'], 'sz')).toEqual(['000925.SZ']);
     expect(getDefaultTickerFromHistory(items, 'SPY')).toBe('000925.SZ');
     expect(getDefaultTickerFromHistory([], 'SPY')).toBe('SPY');
+  });
+
+  it('extracts A-share search codes from normalized tickers', () => {
+    expect(getAshareTickerSearchCode('603386.SS')).toBe('603386');
+    expect(getAshareTickerSearchCode('000767.sz')).toBe('000767');
+    expect(getAshareTickerSearchCode('AAPL')).toBeNull();
+  });
+
+  it('formats A-share stock suggestions and history labels with stock names', () => {
+    const suggestion: StockSearchSuggestion = {
+      code: '603386',
+      name: '骏亚科技',
+      ticker: '603386.SS',
+      market: '沪A',
+      pinyin: 'JYKJ'
+    };
+
+    expect(formatStockSearchSuggestionLabel(suggestion)).toBe('骏亚科技 · 603386.SS · 沪A');
+    expect(buildAnalysisTickerLabel({ id: 8, status: 'completed', ticker: '603386.SS', ticker_name: '骏亚科技' })).toBe('骏亚科技 · 603386.SS');
+    expect(buildAnalysisTickerLabel({ id: 9, status: 'completed', parameters: { ...defaultParamsForTest, ticker: '000767.SZ', ticker_name: '晋控电力' } })).toBe('晋控电力 · 000767.SZ');
+    expect(buildAnalysisTickerLabel({ id: 10, status: 'completed', ticker: 'AAPL' })).toBe('AAPL');
+  });
+
+  it('filters history by saved A-share stock name or ticker', () => {
+    const items: AnalysisTask[] = [
+      { id: 1, status: 'completed', ticker: '603386.SS', ticker_name: '骏亚科技' },
+      { id: 2, status: 'completed', ticker: '000767.SZ', parameters: { ...defaultParamsForTest, ticker: '000767.SZ', ticker_name: '晋控电力' } }
+    ];
+
+    expect(filterAnalysisHistory(items, { ticker: '骏亚', analysisDate: '' }).map(item => item.id)).toEqual([1]);
+    expect(filterAnalysisHistory(items, { ticker: '000767', analysisDate: '' }).map(item => item.id)).toEqual([2]);
   });
 
   it('recovers the currently running analysis after refresh by preferring stored active tasks', () => {

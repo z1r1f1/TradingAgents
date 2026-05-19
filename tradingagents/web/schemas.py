@@ -40,6 +40,7 @@ class TokenResponse(BaseModel):
 class AnalysisCreate(BaseModel):
     workspace_id: int | None = None
     ticker: str = Field(min_length=1, max_length=32)
+    ticker_name: str | None = Field(default=None, max_length=120)
     analysis_date: date
     analysts: list[str] = Field(min_length=1)
     research_depth: int = Field(default=1, ge=1, le=10)
@@ -76,10 +77,19 @@ class AnalysisCreate(BaseModel):
             raise ValueError("at least one analyst is required")
         return normalized
 
+    @field_validator("ticker_name")
+    @classmethod
+    def normalize_ticker_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        value = value.strip()
+        return value or None
+
     def parameter_payload(self) -> dict[str, Any]:
         return {
             "workspace_id": self.workspace_id,
             "ticker": self.ticker,
+            "ticker_name": self.ticker_name,
             "analysis_date": self.analysis_date.isoformat(),
             "analysts": self.analysts,
             "research_depth": self.research_depth,
