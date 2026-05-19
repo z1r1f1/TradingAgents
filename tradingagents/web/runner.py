@@ -27,6 +27,13 @@ def _graph_max_attempts() -> int:
         return 2
 
 
+def _env_positive_int(name: str, *, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
 def _is_transient_stream_error(exc: BaseException) -> bool:
     messages: list[str] = []
     current: BaseException | None = exc
@@ -110,6 +117,8 @@ class TradingAgentsGraphRunner:
                 "openai_reasoning_effort": params.openai_reasoning_effort,
                 "anthropic_effort": params.anthropic_effort,
                 "checkpoint_enabled": _env_bool("TRADINGAGENTS_WEB_CHECKPOINT_ENABLED", default=True),
+                "llm_timeout": _env_positive_int("TRADINGAGENTS_WEB_LLM_TIMEOUT", default=120),
+                "llm_max_retries": _env_positive_int("TRADINGAGENTS_WEB_LLM_MAX_RETRIES", default=2),
             }
         )
         if params.backend_url:

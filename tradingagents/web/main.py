@@ -699,6 +699,8 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
         task = repository.get_task_for_user(task_id, user["id"], include_detail=False)
         if not task:
             raise HTTPException(status_code=404, detail="analysis not found")
+        if analysis_is_active(task.get("status")):
+            raise HTTPException(status_code=409, detail="cancel or wait for analysis before deleting it")
         require_workspace_role(user, task.get("workspace_id"), {"owner", "admin"})
         if not repository.delete_task_for_user(task_id, user["id"]):
             raise HTTPException(status_code=404, detail="analysis not found")

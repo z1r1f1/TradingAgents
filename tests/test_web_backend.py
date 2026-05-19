@@ -359,6 +359,35 @@ def test_running_analysis_can_be_cancelled_and_reports_stale_metadata(tmp_path: 
     assert repeated.status_code == 409
 
 
+def test_running_analysis_cannot_be_deleted_until_terminal(tmp_path: Path):
+    client, db_path = make_client(tmp_path)
+    headers = login(client)
+
+    create = client.post(
+        "/api/analyses",
+        headers=headers,
+        json={
+            "ticker": "TSLA",
+            "analysis_date": "2026-05-01",
+            "analysts": ["market"],
+            "research_depth": 1,
+            "llm_provider": "openai",
+            "quick_model": "gpt-5.4-mini",
+            "deep_model": "gpt-5.5",
+            "output_language": "English",
+        },
+    ).json()
+    task_id = create["id"]
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("update analysis_tasks set status = 'running', completed_at = null, error = null where id = ?", (task_id,))
+
+    response = client.delete(f"/api/analyses/{task_id}", headers=headers)
+
+    assert response.status_code == 409
+    detail = client.get(f"/api/analyses/{task_id}", headers=headers).json()
+    assert detail["status"] == "running"
+
+
 def test_running_analysis_can_be_paused_and_stream_ends(tmp_path: Path):
     client, db_path = make_client(tmp_path)
     headers = login(client)
@@ -593,6 +622,57 @@ def test_real_graph_runner_emits_progressive_events_from_stream(monkeypatch):
     )
     assert result.final_decision["decision"] == "BUY"
     assert result.report_sections["market_report"] == "market report final"
+
+
+def test_web_graph_runner_applies_llm_timeout_settings(monkeypatch):
+    import tradingagents.graph.trading_graph as trading_graph_module
+
+    captured_config = {}
+
+    class FakeTradingAgentsGraph:
+        def __init__(self, selected_analysts, config, debug=False):
+            captured_config.update(config)
+            self.memory_log = type("Memory", (), {"get_past_context": lambda self, ticker: ""})()
+            self.propagator = type(
+                "Propagator",
+                (),
+                {
+                    "create_initial_state": lambda self, ticker, analysis_date, past_context=None: {},
+                    "get_graph_args": lambda self: {},
+                },
+            )()
+            self.graph = type(
+                "CompiledGraph",
+                (),
+                {
+                    "stream": lambda self, initial_state, **kwargs: iter([
+                        {"final_trade_decision": "HOLD SPY", "messages": []}
+                    ]),
+                },
+            )()
+
+        def process_signal(self, raw_signal):
+            return "HOLD"
+
+    monkeypatch.setenv("TRADINGAGENTS_WEB_LLM_TIMEOUT", "33")
+    monkeypatch.setenv("TRADINGAGENTS_WEB_LLM_MAX_RETRIES", "4")
+    monkeypatch.setattr(trading_graph_module, "TradingAgentsGraph", FakeTradingAgentsGraph)
+
+    params = AnalysisCreate(
+        ticker="SPY",
+        analysis_date="2026-05-01",
+        analysts=["market"],
+        research_depth=1,
+        llm_provider="openai",
+        quick_model="gpt-5.4-mini",
+        deep_model="gpt-5.5",
+        output_language="English",
+    )
+
+    TradingAgentsGraphRunner().run(params, lambda event: None)
+
+    assert captured_config["llm_timeout"] == 33
+    assert captured_config["llm_max_retries"] == 4
 
 
 def test_real_graph_runner_retries_transient_incomplete_chunked_stream(monkeypatch):
