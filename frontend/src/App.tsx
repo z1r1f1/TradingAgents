@@ -191,6 +191,10 @@ export function getAshareTickerSearchCode(ticker: string): string | null {
   return match ? match[1] : null;
 }
 
+export function buildTickerInputUpdate(value: string): { inputValue: string; payloadTicker: string } {
+  return { inputValue: value, payloadTicker: value.trim().toUpperCase() };
+}
+
 export function getRecentAnalyzedTickers(items: AnalysisTask[], limit = 12): string[] {
   const tickers: string[] = [];
   const seen = new Set<string>();
@@ -1383,6 +1387,7 @@ function App() {
   const [email, setEmail] = useState(initialEmail);
   const [password, setPassword] = useState(initialPassword);
   const [params, setParams] = useState(defaultParams);
+  const [tickerInputValue, setTickerInputValue] = useState(defaultParams.ticker);
   const [history, setHistory] = useState<AnalysisTask[]>([]);
   const [selected, setSelected] = useState<AnalysisTask | null>(null);
   const [events, setEvents] = useState<AgentEvent[]>([]);
@@ -1448,7 +1453,7 @@ function App() {
     () => filterRecentTickerSuggestions(recentAnalyzedTickers, params.ticker),
     [recentAnalyzedTickers, params.ticker]
   );
-  const stockSearchQuery = params.ticker.trim();
+  const stockSearchQuery = tickerInputValue.trim();
   const memoryFilterOptions = useMemo(() => getMemoryFilterOptions(memories), [memories]);
   const visibleMemories = useMemo(
     () => filterMemoriesForView(memories, { ticker: memoryTickerFilter, analysisDate: memoryDateFilter, agentName: memoryAgentFilter }),
@@ -1576,6 +1581,7 @@ function App() {
     const latestTicker = getDefaultTickerFromHistory(history, '');
     if (!latestTicker || tickerTouchedRef.current) return;
     setParams(current => (current.ticker === latestTicker ? current : { ...current, ticker: latestTicker }));
+    setTickerInputValue(latestTicker);
   }, [history]);
 
   useEffect(() => {
@@ -1634,19 +1640,23 @@ function App() {
 
   function updateTickerInput(value: string) {
     tickerTouchedRef.current = true;
-    setParams(current => ({ ...current, ticker: value.toUpperCase(), ticker_name: null }));
+    const next = buildTickerInputUpdate(value);
+    setTickerInputValue(next.inputValue);
+    setParams(current => ({ ...current, ticker: next.payloadTicker, ticker_name: null }));
     setTickerDropdownOpen(true);
   }
 
   function chooseTickerSuggestion(ticker: string) {
     if (!ticker) return;
     tickerTouchedRef.current = true;
+    setTickerInputValue(ticker);
     setParams(current => ({ ...current, ticker, ticker_name: null }));
     setTickerDropdownOpen(false);
   }
 
   function chooseStockSearchSuggestion(suggestion: StockSearchSuggestion) {
     tickerTouchedRef.current = true;
+    setTickerInputValue(suggestion.ticker);
     setParams(current => ({ ...current, ticker: suggestion.ticker, ticker_name: suggestion.name }));
     setTickerDropdownOpen(false);
   }
@@ -1752,6 +1762,7 @@ function App() {
     setSelected(detail);
     setEvents(detail.events ?? []);
     tickerTouchedRef.current = true;
+    setTickerInputValue(detail.parameters?.ticker ?? detail.ticker ?? defaultParams.ticker);
     setParams(buildEditableParamsFromTask(detail));
   }
 
@@ -2150,7 +2161,7 @@ function App() {
 	                        <input
 	                          className={inputClass}
 	                          placeholder="例如 宁德时代、骏亚科技、600330"
-	                          value={params.ticker}
+	                          value={tickerInputValue}
 	                          aria-haspopup="listbox"
 	                          aria-expanded={tickerDropdownOpen}
 	                          onFocus={() => setTickerDropdownOpen(true)}
@@ -2272,7 +2283,11 @@ function App() {
                       {selected.intervention_sessions?.map(session => <button key={session.id} className="mt-2 block text-left text-sm text-cyan-700 hover:text-cyan-700" onClick={() => { void loadIntervention(session.id); setActivePage('interventions'); }}>{buildInterventionLabel(session)}</button>)}
                     </InfoBlock>
                     <div className="flex flex-wrap gap-2">
-                      <Button className="bg-slate-100 text-slate-900 hover:bg-slate-200" onClick={() => selected && setParams(buildEditableParamsFromTask(selected))}>载入参数</Button>
+                      <Button className="bg-slate-100 text-slate-900 hover:bg-slate-200" onClick={() => {
+                        if (!selected) return;
+                        setTickerInputValue(selected.parameters?.ticker ?? selected.ticker ?? defaultParams.ticker);
+                        setParams(buildEditableParamsFromTask(selected));
+                      }}>载入参数</Button>
                       <Button onClick={() => rerunSelected({})}><RotateCcw className="mr-2 inline" size={16}/>按原参数再分析</Button>
                       {isAnalysisInProgress(selected.status) && <Button className="bg-cyan-600 text-white hover:bg-cyan-500" onClick={pauseSelectedAnalysis}>暂停分析</Button>}
                       {isAnalysisInProgress(selected.status) && <Button className="bg-amber-500 text-white hover:bg-amber-400" onClick={cancelSelectedAnalysis}>取消分析</Button>}

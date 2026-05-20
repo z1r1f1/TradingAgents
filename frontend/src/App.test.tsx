@@ -11,6 +11,7 @@ import {
   buildOidcAuthorizeUrl,
   buildAnalysisParameterSummary,
   buildAnalysisTickerLabel,
+  buildTickerInputUpdate,
   buildMemoryPreviewText,
   buildStaleAnalysisWarning,
   deriveAnalysisStatusFromEvent,
@@ -174,6 +175,12 @@ describe('TradingAgents web frontend', () => {
     expect(getAshareTickerSearchCode('603386.SS')).toBe('603386');
     expect(getAshareTickerSearchCode('000767.sz')).toBe('000767');
     expect(getAshareTickerSearchCode('AAPL')).toBeNull();
+  });
+
+  it('keeps raw stock-name input for fuzzy search while normalizing manual ticker payloads', () => {
+    expect(buildTickerInputUpdate('jun')).toEqual({ inputValue: 'jun', payloadTicker: 'JUN' });
+    expect(buildTickerInputUpdate('骏亚')).toEqual({ inputValue: '骏亚', payloadTicker: '骏亚' });
+    expect(buildTickerInputUpdate('600330.ss')).toEqual({ inputValue: '600330.ss', payloadTicker: '600330.SS' });
   });
 
   it('formats A-share stock suggestions and history labels with stock names', () => {
