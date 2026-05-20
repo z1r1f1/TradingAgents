@@ -195,6 +195,10 @@ export function buildTickerInputUpdate(value: string): { inputValue: string; pay
   return { inputValue: value, payloadTicker: value.trim().toUpperCase() };
 }
 
+export function shouldShowTickerDropdown(state: { open: boolean; query: string; recentCount: number; suggestionCount: number; loading: boolean }): boolean {
+  return state.open && (Boolean(state.query.trim()) || state.recentCount > 0 || state.suggestionCount > 0 || state.loading);
+}
+
 export function getRecentAnalyzedTickers(items: AnalysisTask[], limit = 12): string[] {
   const tickers: string[] = [];
   const seen = new Set<string>();
@@ -2169,7 +2173,13 @@ function App() {
 	                          onBlur={() => window.setTimeout(() => setTickerDropdownOpen(false), 120)}
 	                          onChange={e => updateTickerInput(e.target.value)}
 	                        />
-	                        {(stockSearchSuggestions.length || recentAnalyzedTickers.length || stockSearchLoading) && tickerDropdownOpen ? (
+	                        {shouldShowTickerDropdown({
+	                          open: tickerDropdownOpen,
+	                          query: stockSearchQuery,
+	                          recentCount: recentAnalyzedTickers.length,
+	                          suggestionCount: stockSearchSuggestions.length,
+	                          loading: stockSearchLoading
+	                        }) ? (
 	                          <div
 	                            className="absolute z-40 mt-1 w-full overflow-hidden rounded-2xl border border-cyan-100 bg-white shadow-2xl shadow-slate-200/90"
 	                            role="listbox"

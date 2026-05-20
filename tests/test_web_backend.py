@@ -158,6 +158,37 @@ def test_stock_search_normalizes_eastmoney_a_share_results(tmp_path: Path, monke
     ]
 
 
+def test_stock_search_is_public_read_only_lookup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    client, _ = make_client(tmp_path)
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "QuotationCodeTable": {
+                    "Data": [
+                        {
+                            "Code": "603386",
+                            "Name": "骏亚科技",
+                            "PinYin": "JYKJ",
+                            "MktNum": "1",
+                            "SecurityTypeName": "沪A",
+                            "Classify": "AStock",
+                        }
+                    ]
+                }
+            }
+
+    monkeypatch.setattr(web_main.requests, "get", lambda *args, **kwargs: FakeResponse())
+
+    response = client.get("/api/stock-search", params={"query": "骏亚"})
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["ticker"] == "603386.SS"
+
+
 def test_analysis_preserves_optional_stock_name_for_history(tmp_path: Path):
     client, _ = make_client(tmp_path)
     headers = login(client)

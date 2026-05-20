@@ -247,7 +247,7 @@ export type ComplianceExport = {
   provisioning_events: ProvisioningEvent[];
 };
 
-const API_BASE = import.meta.env.VITE_TRADINGAGENTS_API ?? 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_TRADINGAGENTS_API ?? (import.meta.env.DEV ? 'http://localhost:8000' : '');
 
 async function request<T>(path: string, token: string | null, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {

@@ -51,6 +51,7 @@ import {
   parseAnalystsInput,
   shouldShowClusterRuntimeWarning,
   shouldShowProductionSafetyWarning,
+  shouldShowTickerDropdown,
   toggleAnalystSelection,
   workspacePages
 } from './App';
@@ -181,6 +182,11 @@ describe('TradingAgents web frontend', () => {
     expect(buildTickerInputUpdate('jun')).toEqual({ inputValue: 'jun', payloadTicker: 'JUN' });
     expect(buildTickerInputUpdate('骏亚')).toEqual({ inputValue: '骏亚', payloadTicker: '骏亚' });
     expect(buildTickerInputUpdate('600330.ss')).toEqual({ inputValue: '600330.ss', payloadTicker: '600330.SS' });
+  });
+
+  it('keeps the ticker dropdown open for typed stock-name queries even before results arrive', () => {
+    expect(shouldShowTickerDropdown({ open: true, query: '骏亚', recentCount: 0, suggestionCount: 0, loading: false })).toBe(true);
+    expect(shouldShowTickerDropdown({ open: true, query: '', recentCount: 0, suggestionCount: 0, loading: false })).toBe(false);
   });
 
   it('formats A-share stock suggestions and history labels with stock names', () => {

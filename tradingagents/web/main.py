@@ -623,8 +623,7 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
         return Response(status_code=204)
 
     @app.get("/api/stock-search")
-    def search_stocks(query: str = "", user: dict = Depends(current_user)) -> dict:
-        del user
+    def search_stocks(query: str = "") -> dict:
         query = query.strip()
         if not query:
             return {"items": []}
