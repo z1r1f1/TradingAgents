@@ -247,14 +247,26 @@ export type ComplianceExport = {
   provisioning_events: ProvisioningEvent[];
 };
 
+export const AUTH_EXPIRED_EVENT = 'tradingagents:auth-expired';
+
 const API_BASE = import.meta.env.VITE_TRADINGAGENTS_API ?? (import.meta.env.DEV ? 'http://localhost:8000' : '');
+
+function emitAuthExpired(): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+  }
+}
 
 async function request<T>(path: string, token: string | null, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(init.headers ?? {}) }
   });
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) {
+    const message = await response.text();
+    if (token && (response.status === 401 || response.status === 403)) emitAuthExpired();
+    throw new Error(message);
+  }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
@@ -320,7 +332,11 @@ export const api = {
 
 export async function streamTaskEvents(token: string, taskId: number, onEvent: (event: AgentEvent) => void): Promise<void> {
   const response = await fetch(api.streamUrl(taskId), { headers: { Authorization: `Bearer ${token}` } });
-  if (!response.ok || !response.body) throw new Error(await response.text());
+  if (!response.ok || !response.body) {
+    const message = await response.text();
+    if (response.status === 401 || response.status === 403) emitAuthExpired();
+    throw new Error(message);
+  }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';

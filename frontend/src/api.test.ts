@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { api } from './api';
+import { api, AUTH_EXPIRED_EVENT } from './api';
 
 describe('TradingAgents web API', () => {
   it('exposes a pause endpoint for analyses', async () => {
@@ -40,5 +40,22 @@ describe('TradingAgents web API', () => {
         headers: expect.objectContaining({ Authorization: 'Bearer token-123' })
       })
     );
+  });
+
+  it('emits an auth-expired event when an authenticated request receives 401', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ detail: 'token expired' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' }
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const listener = vi.fn();
+    window.addEventListener(AUTH_EXPIRED_EVENT, listener);
+
+    await expect(api.listAnalyses('expired-token')).rejects.toThrow('token expired');
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    window.removeEventListener(AUTH_EXPIRED_EVENT, listener);
   });
 });

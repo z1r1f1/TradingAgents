@@ -2,6 +2,7 @@ import { FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 
 import { Activity, Brain, CalendarClock, Database, History, LogOut, PlayCircle, RotateCcw, Search, ShieldCheck, Users } from 'lucide-react';
 import {
   api,
+  AUTH_EXPIRED_EVENT,
   AgentEvent,
   AnalysisParams,
   AnalysisTask,
@@ -1488,6 +1489,14 @@ function App() {
   }, []);
 
   useEffect(() => {
+    function handleAuthExpired() {
+      clearAuthenticatedSession('登录已过期，请重新登录。');
+    }
+    window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
+  }, []);
+
+  useEffect(() => {
     if (token) {
       void refreshHistory(token);
       void refreshSchedules(token);
@@ -2032,11 +2041,11 @@ function App() {
     await refreshInterventions(token);
   }
 
-  function logout() {
-    if (token) void api.logout(token).catch(() => undefined);
+  function clearAuthenticatedSession(message?: string) {
     localStorage.removeItem('ta_token');
     setToken(null);
     setSelected(null);
+    setEvents([]);
     setHistory([]);
     setSchedules([]);
     setMemories([]);
@@ -2045,6 +2054,12 @@ function App() {
     setWorkspaces([]);
     setSelectedWorkspaceId(null);
     setRuntimeHealth(null);
+    setError(message ?? null);
+  }
+
+  function logout() {
+    if (token) void api.logout(token).catch(() => undefined);
+    clearAuthenticatedSession();
   }
 
   if (!authenticated) {
