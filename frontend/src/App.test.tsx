@@ -13,6 +13,7 @@ import {
   buildAnalysisTickerLabel,
   buildTickerInputUpdate,
   buildMemoryPreviewText,
+  buildReusableAnalysisParamsFromTask,
   buildStaleAnalysisWarning,
   deriveAnalysisStatusFromEvent,
   resolveAgentFlowOutputDetail,
@@ -52,6 +53,8 @@ import {
   shouldShowClusterRuntimeWarning,
   shouldShowProductionSafetyWarning,
   shouldShowTickerDropdown,
+  resolveThemeMode,
+  ThemeToggle,
   toggleAnalystSelection,
   workspacePages
 } from './App';
@@ -83,6 +86,23 @@ describe('TradingAgents web frontend', () => {
     expect(getWorkspacePageMeta('compliance')?.title).toBe('合规与身份');
   });
 
+  it('exposes explicit light and dark theme controls instead of mixing themes implicitly', () => {
+    expect(resolveThemeMode('dark', false)).toBe('dark');
+    expect(resolveThemeMode('light', true)).toBe('light');
+    expect(resolveThemeMode(null, true)).toBe('dark');
+    expect(resolveThemeMode('unexpected', false)).toBe('light');
+
+    const lightHtml = renderToStaticMarkup(<ThemeToggle themeMode="light" onToggle={() => undefined} />);
+    const darkHtml = renderToStaticMarkup(<ThemeToggle themeMode="dark" onToggle={() => undefined} />);
+
+    expect(lightHtml).toContain('当前：亮色主题');
+    expect(lightHtml).toContain('切换到深色主题');
+    expect(lightHtml).toContain('aria-pressed="false"');
+    expect(darkHtml).toContain('当前：深色主题');
+    expect(darkHtml).toContain('切换到亮色主题');
+    expect(darkHtml).toContain('aria-pressed="true"');
+  });
+
   it('loads historical task parameters into the editable analysis form', () => {
     const task: AnalysisTask = {
       id: 42,
@@ -104,6 +124,36 @@ describe('TradingAgents web frontend', () => {
     expect(params.ticker).toBe('MSFT');
     expect(params.analysts).toEqual(['fundamentals']);
     expect(params.research_depth).toBe(1);
+  });
+
+  it('loads reusable analysis parameters without carrying over previous output data', () => {
+    const task: AnalysisTask = {
+      id: 42,
+      status: 'completed',
+      ticker: 'MSFT',
+      analysis_date: '2026-05-01',
+      events: [
+        { sequence: 1, agent: 'Market Analyst', event_type: 'report.section', message: 'old report', created_at: '2026-05-01T00:00:00Z' }
+      ],
+      report_sections: [{ section_name: 'market', content: 'old report' }],
+      parameters: {
+        ticker: 'MSFT',
+        analysis_date: '2026-05-01',
+        analysts: ['fundamentals'],
+        research_depth: 1,
+        llm_provider: 'openai',
+        quick_model: 'gpt-5.4-mini',
+        deep_model: 'gpt-5.5',
+        output_language: 'English'
+      }
+    };
+
+    const draft = buildReusableAnalysisParamsFromTask(task);
+
+    expect(draft.params.ticker).toBe('MSFT');
+    expect(draft.tickerInputValue).toBe('MSFT');
+    expect(draft.selected).toBeNull();
+    expect(draft.events).toEqual([]);
   });
 
   it('maps the visible thinking depth selector to provider-specific payload fields', () => {

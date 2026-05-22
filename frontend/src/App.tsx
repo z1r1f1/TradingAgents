@@ -1,5 +1,5 @@
 import { FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, Brain, CalendarClock, Database, History, LogOut, PlayCircle, RotateCcw, Search, ShieldCheck, Users } from 'lucide-react';
+import { Activity, Brain, CalendarClock, Database, History, LogOut, Moon, PlayCircle, RotateCcw, Search, ShieldCheck, Sun, Users } from 'lucide-react';
 import {
   api,
   AUTH_EXPIRED_EVENT,
@@ -85,6 +85,42 @@ export const defaultParams: AnalysisParams = {
   memory_ids: []
 };
 
+export type ThemeMode = 'light' | 'dark';
+
+const THEME_STORAGE_KEY = 'ta_theme_mode';
+
+export function resolveThemeMode(stored: string | null | undefined, prefersDark: boolean): ThemeMode {
+  if (stored === 'light' || stored === 'dark') return stored;
+  return prefersDark ? 'dark' : 'light';
+}
+
+function getInitialThemeMode(): ThemeMode {
+  if (typeof window === 'undefined') return 'light';
+  return resolveThemeMode(
+    localStorage.getItem(THEME_STORAGE_KEY),
+    window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false
+  );
+}
+
+export function ThemeToggle({ themeMode, onToggle }: { themeMode: ThemeMode; onToggle: () => void }) {
+  const dark = themeMode === 'dark';
+  return (
+    <button
+      type="button"
+      aria-pressed={dark}
+      aria-label={dark ? '切换到亮色主题' : '切换到深色主题'}
+      onClick={onToggle}
+      className="inline-flex items-center gap-2 rounded-full border border-subtle bg-surface/95 px-3 py-2 text-xs font-semibold text-primary shadow-panel transition hover:-translate-y-0.5 hover:border-accent hover:shadow-glow"
+    >
+      {dark ? <Moon size={15} className="text-accent" /> : <Sun size={15} className="text-accent" />}
+      <span>当前：{dark ? '深色主题' : '亮色主题'}</span>
+      <span className="rounded-full bg-accent-soft px-2 py-0.5 text-[11px] text-accent">
+        {dark ? '切换到亮色主题' : '切换到深色主题'}
+      </span>
+    </button>
+  );
+}
+
 const isProductionWeb = import.meta.env.VITE_TRADINGAGENTS_WEB_ENV === 'production';
 const initialEmail = isProductionWeb ? '' : 'demo@example.com';
 const initialPassword = isProductionWeb ? '' : 'demo-password';
@@ -140,6 +176,21 @@ export function toggleAnalystSelection(selected: string[], analyst: string): str
 export function buildEditableParamsFromTask(task: AnalysisTask): AnalysisParams {
   if (!task.parameters) return defaultParams;
   return { ...defaultParams, ...task.parameters, analysts: [...task.parameters.analysts] };
+}
+
+export function buildReusableAnalysisParamsFromTask(task: AnalysisTask): {
+  params: AnalysisParams;
+  tickerInputValue: string;
+  selected: AnalysisTask | null;
+  events: AgentEvent[];
+} {
+  const params = buildEditableParamsFromTask(task);
+  return {
+    params,
+    tickerInputValue: params.ticker || task.ticker || defaultParams.ticker,
+    selected: null,
+    events: []
+  };
 }
 
 export function applyThinkingDepth(params: AnalysisParams, depth: ThinkingDepth): AnalysisParams {
@@ -1388,6 +1439,7 @@ function InterventionMarkdownTimeline({ intervention }: { intervention: Interven
 }
 
 function App() {
+  const [themeMode, setThemeMode] = useState<ThemeMode>(getInitialThemeMode);
   const [token, setToken] = useState(localStorage.getItem('ta_token'));
   const [email, setEmail] = useState(initialEmail);
   const [password, setPassword] = useState(initialPassword);
@@ -1446,8 +1498,19 @@ function App() {
   const selectedTaskIdRef = useRef<number | null>(null);
   const tickerTouchedRef = useRef(false);
   const stockNameCacheRef = useRef<Record<string, string>>({});
+  const suppressAutoResumeRef = useRef(false);
 
   const authenticated = Boolean(token);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = themeMode;
+    document.documentElement.style.colorScheme = themeMode;
+    localStorage.setItem(THEME_STORAGE_KEY, themeMode);
+  }, [themeMode]);
+
+  function toggleThemeMode() {
+    setThemeMode(current => (current === 'dark' ? 'light' : 'dark'));
+  }
   const activePageMeta = getWorkspacePageMeta(activePage) ?? workspacePages[0];
   const filteredHistory = useMemo(
     () => filterAnalysisHistory(history, { ticker: historyTickerFilter, analysisDate: historyDateFilter }),
@@ -1599,6 +1662,10 @@ function App() {
 
   useEffect(() => {
     if (!token || selected) return;
+    if (suppressAutoResumeRef.current) {
+      suppressAutoResumeRef.current = false;
+      return;
+    }
     const stored = Number(localStorage.getItem(ACTIVE_ANALYSIS_TASK_KEY));
     const storedTaskId = Number.isFinite(stored) ? stored : null;
     const recoverableTaskId = getRecoverableAnalysisTaskId(history, null, storedTaskId);
@@ -1709,6 +1776,14 @@ function App() {
     }
   }
 
+  function clearAnalysisOutputForNewRun() {
+    suppressAutoResumeRef.current = true;
+    selectedTaskIdRef.current = null;
+    setSelected(null);
+    setEvents([]);
+    setSelectedReportSectionName(null);
+  }
+
   async function streamAndFinalizeTask(taskId: number) {
     if (!token || streamingTaskId === taskId) return;
     setStreamingTaskId(taskId);
@@ -1747,6 +1822,7 @@ function App() {
   async function launch() {
     if (!token) return;
     setError(null);
+    clearAnalysisOutputForNewRun();
     try {
       const task = await api.createAnalysis(token, { ...params, workspace_id: selectedWorkspaceId });
       rememberActiveAnalysisTask(task);
@@ -1772,16 +1848,18 @@ function App() {
   async function loadTaskParameters(id: number) {
     if (!token) return;
     const detail = await api.getAnalysis(token, id);
-    setSelected(detail);
-    setEvents(detail.events ?? []);
+    const draft = buildReusableAnalysisParamsFromTask(detail);
+    clearAnalysisOutputForNewRun();
     tickerTouchedRef.current = true;
-    setTickerInputValue(detail.parameters?.ticker ?? detail.ticker ?? defaultParams.ticker);
-    setParams(buildEditableParamsFromTask(detail));
+    setTickerInputValue(draft.tickerInputValue);
+    setParams(draft.params);
   }
 
   async function rerunSelected(overrides: Partial<AnalysisParams> = {}) {
     if (!token || !selected) return;
-    const task = await api.rerun(token, selected.id, overrides);
+    const sourceTaskId = selected.id;
+    clearAnalysisOutputForNewRun();
+    const task = await api.rerun(token, sourceTaskId, overrides);
     rememberActiveAnalysisTask(task);
     await resumeAnalysisTask(task.id);
     await refreshHistory(token);
@@ -2064,7 +2142,10 @@ function App() {
 
   if (!authenticated) {
     return (
-      <main className="relative min-h-screen overflow-hidden bg-[radial-gradient(circle_at_top_left,#dbeafe_0,#f8fafc_42%,#eef2ff_100%)] px-6 py-10 text-slate-900">
+      <main className="theme-shell relative min-h-screen overflow-hidden px-6 py-10 text-primary">
+        <div className="absolute right-6 top-6 z-20">
+          <ThemeToggle themeMode={themeMode} onToggle={toggleThemeMode} />
+        </div>
         <div className="absolute inset-x-0 top-0 h-64 bg-gradient-to-r from-cyan-200/60 via-blue-100/60 to-violet-200/60 blur-3xl" />
         <section className="relative mx-auto grid min-h-[calc(100vh-5rem)] max-w-6xl items-center gap-10 lg:grid-cols-[1.1fr_0.9fr]">
           <div className="space-y-8">
@@ -2104,7 +2185,7 @@ function App() {
   }
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,#dbeafe_0,#f8fafc_38%,#eef2ff_100%)] text-slate-900">
+    <main className="theme-shell min-h-screen text-primary">
       <div className="mx-auto max-w-[1500px] space-y-6 px-5 py-6 lg:px-8">
         <header className="overflow-hidden rounded-3xl border border-slate-200 bg-white/85 p-6 shadow-xl shadow-slate-200/80 backdrop-blur-xl">
           <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
@@ -2120,6 +2201,7 @@ function App() {
               </div>
             </div>
             <div className="flex flex-wrap gap-3">
+              <ThemeToggle themeMode={themeMode} onToggle={toggleThemeMode} />
               <Button onClick={exportAccount} className="bg-slate-950 text-white hover:bg-slate-800">导出账号</Button>
               <Button onClick={logout} className="bg-slate-100 text-slate-900 ring-1 ring-slate-200 hover:bg-slate-200"><LogOut className="mr-2 inline" size={16}/>退出登录</Button>
             </div>
