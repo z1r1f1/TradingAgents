@@ -68,18 +68,18 @@ export default {
         'panel-sheen': 'linear-gradient(135deg, hsl(var(--surface-elevated) / 0.96), hsl(var(--surface) / 0.88))'
       },
       boxShadow: {
-        panel: '0 22px 60px -30px hsl(var(--shadow) / 0.65)',
-        float: '0 18px 48px -28px hsl(var(--shadow) / 0.55)',
-        glow: '0 0 0 1px hsl(var(--accent) / 0.14), 0 22px 55px -30px hsl(var(--accent) / 0.35)'
+        panel: '10px 10px 0 hsl(var(--canvas) / 0.92)',
+        float: '14px 14px 0 hsl(var(--canvas) / 0.9)',
+        glow: '0 0 0 1px hsl(var(--accent) / 0.16), 10px 10px 0 hsl(var(--canvas) / 0.9)'
       },
       borderRadius: {
-        panel: '1.5rem',
-        card: '1.25rem',
+        panel: '0.5rem',
+        card: '0.5rem',
         pill: '999px'
       },
       fontFamily: {
         sans: [
-          'Inter',
+          '"Avenir Next"',
           'ui-sans-serif',
           'system-ui',
           '-apple-system',
@@ -91,8 +91,8 @@ export default {
         ]
       },
       letterSpacing: {
-        panel: '0.08em',
-        data: '0.02em'
+        panel: '0.14em',
+        data: '0'
       }
     }
   },

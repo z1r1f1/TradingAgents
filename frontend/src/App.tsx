@@ -1110,6 +1110,119 @@ function MemoryPicker({ title, memories, selectedIds, onToggle }: { title: strin
   return <div className="surface-card p-3 text-sm"><p className="mb-2 text-label">{title}</p>{memories.length ? memories.map(memory => <label key={memory.id} className="flex items-center gap-2 py-1 text-muted"><input type="checkbox" checked={selectedIds.includes(memory.id)} onChange={() => onToggle(memory.id)} /> <span>{buildMemoryOptionLabel(memory)}</span></label>) : <p className="text-xs text-subtle">暂无可选记忆</p>}</div>;
 }
 
+function OpenDesignBrand() {
+  return (
+    <span className="od-brand">
+      <span className="od-brand-mark" aria-hidden="true" />
+      <span>TradingAgents</span>
+    </span>
+  );
+}
+
+function LandingAnalysisPreview({
+  mode,
+  ticker,
+  analysisDate,
+  memoryCount,
+  onLaunch,
+  disabled
+}: {
+  mode: string;
+  ticker: string;
+  analysisDate: string;
+  memoryCount: number;
+  onLaunch?: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="od-collage" aria-label="TradingAgents 分析生成器预览">
+      <div className="floating-ticket hidden border border-strong bg-surface p-3 font-mono text-xs leading-5 text-muted shadow-panel lg:block" aria-hidden="true">
+        <b className="mb-2 block text-base text-primary">TA-01</b>
+        ticker input<br />agent debate<br />live memory
+      </div>
+      <div className="od-canvas-card">
+        <header className="flex min-h-12 items-center justify-between border-b border-strong px-4 font-mono text-[11px] uppercase tracking-[0.13em]">
+          <span>New analysis</span>
+          <span className="text-accent">{mode}</span>
+        </header>
+        <div className="grid gap-4 p-5">
+          <div className="text-label text-accent">Analysis brief</div>
+          <div className="grid gap-2 sm:grid-cols-2" aria-label="分析参数概览">
+            <div className="rounded-card border border-subtle bg-surface-strong p-3">
+              <span className="text-label">Ticker</span>
+              <strong className="mt-1 block text-lg text-primary">{ticker || 'SPY'}</strong>
+            </div>
+            <div className="rounded-card border border-subtle bg-surface-strong p-3">
+              <span className="text-label">Date</span>
+              <strong className="mt-1 block text-lg text-primary">{analysisDate}</strong>
+            </div>
+            <div className="rounded-card border border-subtle bg-surface-strong p-3 sm:col-span-2">
+              <span className="text-label">Analyst agents</span>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {['Market', 'News', 'Social', 'Fundamentals'].map((agent, index) => (
+                  <span key={agent} className={`rounded-pill border px-3 py-1 text-xs ${index === 0 ? 'border-accent text-accent' : 'border-subtle text-muted'}`}>{agent}</span>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-card border border-subtle bg-surface-strong p-3">
+              <span className="text-label">Memory</span>
+              <strong className="mt-1 block text-lg text-primary">{memoryCount} notes</strong>
+            </div>
+            <div className="rounded-card border border-subtle bg-surface-strong p-3">
+              <span className="text-label">Reasoning</span>
+              <strong className="mt-1 block text-lg text-primary">High</strong>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <span className="inline-flex items-center gap-2 font-mono text-xs text-muted"><i className="h-2.5 w-2.5 rounded-full bg-positive shadow-[0_0_0_4px_hsl(var(--positive)_/_0.16)]" aria-hidden="true" /> Ready to stream</span>
+            {onLaunch ? (
+              <Button type="button" onClick={onLaunch} disabled={disabled}>
+                <PlayCircle size={16} />启动分析
+              </Button>
+            ) : null}
+          </div>
+        </div>
+        <div className="grid border-t border-strong lg:grid-cols-[1.1fr_0.9fr]" aria-label="实时分析预览状态">
+          <div className="border-strong bg-canvas p-5 lg:border-r">
+            <div className="grid min-h-52 grid-rows-[34px_1fr] border border-strong bg-surface">
+              <div className="flex items-center justify-between border-b border-strong px-3 font-mono text-[10px] text-muted">
+                <span className="flex gap-1.5"><i className="h-2 w-2 rounded-full border border-strong" /><i className="h-2 w-2 rounded-full border border-strong" /><i className="h-2 w-2 rounded-full border border-strong" /></span>
+                <span>agent stream</span>
+              </div>
+              <div className="grid gap-3 p-3 sm:grid-cols-[1fr_0.76fr]">
+                <div className="grid content-start gap-2">
+                  {['Market Analyst', 'News Analyst', 'Research Manager', 'Portfolio Manager'].map((agent, index) => (
+                    <div key={agent} className="grid min-h-7 grid-cols-[24px_1fr_auto] items-center gap-2 border border-subtle bg-surface px-2 py-1 text-xs">
+                      <i className={`h-[18px] w-[18px] rounded-full border border-strong ${index < 2 ? 'bg-positive' : index === 2 ? 'bg-caution' : 'bg-accent'}`} />
+                      <span>{agent}</span>
+                      <b className="font-mono text-[11px] text-muted">{index < 2 ? 'done' : index === 2 ? 'debate' : 'final'}</b>
+                    </div>
+                  ))}
+                </div>
+                <div className="relative grid min-h-40 content-end gap-2 border border-strong bg-accent-soft p-3">
+                  <span className="absolute right-3 top-3 border border-strong bg-surface px-2 py-1 font-mono text-[10px]">HOLD</span>
+                  <span className="h-2.5 w-4/5 bg-primary" />
+                  <span className="h-2.5 w-3/5 bg-primary" />
+                  <span className="h-2.5 w-2/3 bg-accent" />
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="grid">
+            {['抓取行情、新闻与基本面上下文', '四类分析师生成分工报告', '研究经理整合牛熊论点', '输出最终交易决策与记忆'].map((step, index) => (
+              <div key={step} className="grid grid-cols-[auto_1fr] items-center gap-3 border-b border-strong px-4 py-3 text-sm text-primary last:border-b-0">
+                <span className="grid h-7 w-7 place-items-center rounded-full border border-strong bg-surface font-mono text-[11px]">{String(index + 1).padStart(2, '0')}</span>
+                <span>{step}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="hidden rotate-[5deg] border border-strong bg-surface-strong p-4 font-serif text-2xl leading-none shadow-panel lg:absolute lg:bottom-20 lg:right-0 lg:block" aria-hidden="true">decision,<br />not dashboard noise</div>
+    </div>
+  );
+}
+
 function InlineMarkdown({ text }: { text: string }) {
   const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g).filter(Boolean);
   return (
@@ -2149,45 +2262,79 @@ function App() {
     clearAuthenticatedSession();
   }
 
+  function scrollToLoginAccess() {
+    const loginSection = document.getElementById('login-access');
+    if (!loginSection) return;
+    window.scrollTo({ top: Math.max(loginSection.offsetTop - 76, 0), behavior: 'smooth' });
+  }
+
   if (!authenticated) {
     return (
-      <main className="theme-shell relative min-h-screen overflow-hidden px-6 py-10 text-primary">
-        <div className="absolute right-6 top-6 z-20">
-          <ThemeToggle themeMode={themeMode} onToggle={toggleThemeMode} />
-        </div>
-        <div className="absolute inset-x-0 top-0 h-64 bg-gradient-to-r from-cyan-200/60 via-blue-100/60 to-violet-200/60 blur-3xl" />
-        <section className="relative mx-auto grid min-h-[calc(100vh-5rem)] max-w-6xl items-center gap-10 lg:grid-cols-[1.1fr_0.9fr]">
-          <div className="space-y-8">
-            <div className="inline-flex rounded-full border border-cyan-200 bg-white/70 px-4 py-2 text-sm text-cyan-700 shadow-lg shadow-cyan-100/50 backdrop-blur">
-              多智能体股票研究 · 中文工作台
-            </div>
-            <div>
-              <h1 className="text-5xl font-black tracking-tight text-slate-950 md:text-6xl">TradingAgents<br />金融分析平台</h1>
-              <p className="mt-5 max-w-2xl text-lg leading-8 text-slate-600">
-                将股票分析、智能体记忆、定时任务、人工介入与工作区治理整合到一个可公网访问的中文界面。
-              </p>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-3">
-              <MiniStat label="运行模式" value={runtimeHealth?.runtime_mode ?? 'local'} />
-              <MiniStat label="数据存储" value={runtimeHealth?.storage_backend ?? 'SQLite'} />
-              <MiniStat label="协调后端" value={runtimeHealth?.coordination_backend ?? 'memory'} />
-            </div>
+      <main className="theme-shell min-h-screen text-primary">
+        <header className="od-topbar">
+          <OpenDesignBrand />
+          <nav className="od-nav" aria-label="页面导航">
+            <a href="#login-workbench">工作台</a>
+            <a href="#login-flow">Agent Flow</a>
+            <a href="#login-access">登录</a>
+          </nav>
+          <div className="justify-self-end">
+            <ThemeToggle themeMode={themeMode} onToggle={toggleThemeMode} />
           </div>
-          <Card className="border-slate-200 bg-white/80 p-8 shadow-xl shadow-slate-200/80 backdrop-blur-xl">
-            <CardTitle className="text-2xl">登录研究工作台</CardTitle>
-            <p className="mb-6 text-sm text-slate-600">请输入管理员或工作区成员账号。公网环境已关闭开放注册。</p>
-            <form className="space-y-4" onSubmit={handleLogin}>
-              <Field label="邮箱账号">
-                <input className={inputClass} placeholder="admin@example.com" value={email} onChange={e => setEmail(e.target.value)} />
-              </Field>
-              <Field label="登录密码">
-                <input className={inputClass} type="password" placeholder="请输入密码" value={password} onChange={e => setPassword(e.target.value)} />
-              </Field>
-              <Button className="w-full py-3 text-base">登录平台</Button>
-              {identityStatus?.oidc_enabled && <Button type="button" className="w-full bg-slate-950 text-white hover:bg-slate-800" onClick={startOidcLogin}>使用企业 SSO 登录</Button>}
-              {error && <p className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p>}
-            </form>
-          </Card>
+        </header>
+        <section id="login-workbench" className="px-5 py-12 lg:px-12 lg:py-16">
+          <div className="od-hero-grid mx-auto max-w-[1240px]">
+            <div>
+              <div className="od-issue-line">Open Design Landing / financial agent platform</div>
+              <h1 className="od-display max-w-4xl text-[clamp(3.25rem,8.2vw,7.25rem)] font-semibold leading-[0.94]">把市场噪声交给一组会辩论的 Agent。</h1>
+              <p className="mt-7 max-w-2xl text-lg leading-8 text-primary md:text-2xl">
+                TradingAgents 将股票研究、实时 Agent 输出、智能体记忆、定时任务、人工介入和合规治理组织成一个中文金融工作台。
+              </p>
+              <div className="od-hero-actions">
+                <a className="od-link-button is-solid" href="#login-access">进入工作台</a>
+                <a className="od-link-button" href="#login-flow">查看 Agent 流程</a>
+              </div>
+              <div className="mt-8 grid max-w-xl gap-3 sm:grid-cols-3">
+                <MiniStat label="运行模式" value={runtimeHealth?.runtime_mode ?? 'local'} />
+                <MiniStat label="数据存储" value={runtimeHealth?.storage_backend ?? 'SQLite'} />
+                <MiniStat label="协调后端" value={runtimeHealth?.coordination_backend ?? 'memory'} />
+              </div>
+            </div>
+            <LandingAnalysisPreview
+              mode="SPY / live run"
+              ticker="SPY"
+              analysisDate={defaultParams.analysis_date}
+              memoryCount={7}
+              onLaunch={scrollToLoginAccess}
+            />
+          </div>
+        </section>
+        <div id="login-flow" className="od-marquee" aria-hidden="true">
+          <span>Analysis · Agent Debate · Memory · Schedule · HITL · Governance · Compliance · Analysis · Agent Debate · Memory · Schedule · HITL · Governance · Compliance · </span>
+        </div>
+        <section id="login-access" className="px-5 py-12 lg:px-12 lg:py-16">
+          <div className="mx-auto grid max-w-[1240px] gap-8 lg:grid-cols-[0.9fr_1.1fr]">
+            <div className="od-section-heading lg:block">
+              <div className="od-section-number">Access</div>
+              <h2 className="od-display mt-5 text-5xl font-semibold leading-none md:text-7xl">进入研究工作台。</h2>
+              <p className="mt-6 max-w-lg text-base leading-7 text-muted md:text-lg">登录后会进入真实工作区：发起分析、追踪 Agent 流、复用记忆，并访问治理与合规控制台。</p>
+            </div>
+            <Card className="p-8">
+              <CardTitle className="od-display text-3xl font-semibold">登录研究工作台</CardTitle>
+              <p className="mb-6 text-sm text-muted">请输入管理员或工作区成员账号。公网环境已关闭开放注册。</p>
+              <form className="space-y-4" onSubmit={handleLogin}>
+                <Field label="邮箱账号">
+                  <input className={inputClass} placeholder="admin@example.com" value={email} onChange={e => setEmail(e.target.value)} />
+                </Field>
+                <Field label="登录密码">
+                  <input className={inputClass} type="password" placeholder="请输入密码" value={password} onChange={e => setPassword(e.target.value)} />
+                </Field>
+                <Button className="w-full py-3 text-base">登录平台</Button>
+                {identityStatus?.oidc_enabled && <Button type="button" className="w-full bg-primary text-primary-foreground hover:bg-primary/85" onClick={startOidcLogin}>使用企业 SSO 登录</Button>}
+                {error && <p className="rounded-card border border-negative bg-negative-soft p-3 text-sm text-negative">{error}</p>}
+              </form>
+            </Card>
+          </div>
         </section>
       </main>
     );
@@ -2195,40 +2342,67 @@ function App() {
 
   return (
     <main className="theme-shell min-h-screen text-primary">
-      <div className="mx-auto max-w-[1500px] space-y-6 px-5 py-6 lg:px-8">
-        <header className="overflow-hidden rounded-3xl border border-slate-200 bg-white/85 p-6 shadow-xl shadow-slate-200/80 backdrop-blur-xl">
-          <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
-            <div className="space-y-3">
-              <div className="flex flex-wrap items-center gap-3">
-                <span className="rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1 text-xs font-semibold text-cyan-700">中文金融工作台</span>
-                <StatusBadge status={runtimeHealth?.status ?? 'ok'} />
-                <span className="rounded-full border border-slate-200 bg-slate-50/90 px-3 py-1 text-xs text-slate-600">{runtimeHealth?.storage_backend ?? 'sqlite'} / {runtimeHealth?.coordination_backend ?? 'memory'}</span>
-              </div>
-              <div>
-                <h1 className="text-3xl font-black tracking-tight text-slate-950 md:text-4xl">TradingAgents 多智能体股票分析平台</h1>
-                <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">发起股票研究、追踪每个 Agent 的实时输出，沉淀记忆并支持人工介入与再分析。</p>
-              </div>
+      <header className="od-topbar">
+        <OpenDesignBrand />
+        <nav className="od-nav" aria-label="工作区导航">
+          {workspacePages.map(page => (
+            <button
+              key={page.id}
+              type="button"
+              onClick={() => setActivePage(page.id)}
+              aria-current={activePage === page.id ? 'page' : undefined}
+            >
+              {page.title}
+            </button>
+          ))}
+        </nav>
+        <div className="flex justify-self-end gap-2">
+          <ThemeToggle themeMode={themeMode} onToggle={toggleThemeMode} />
+          <Button onClick={exportAccount}>导出账号</Button>
+          <Button onClick={logout} className="bg-surface text-primary hover:bg-muted"><LogOut className="mr-2 inline" size={16}/>退出</Button>
+        </div>
+      </header>
+
+      <section className="px-5 py-10 lg:px-12 lg:py-14">
+        <div className="od-hero-grid mx-auto max-w-[1240px]">
+          <div>
+            <div className="od-issue-line">Open Design Landing / live workstation</div>
+            <div className="mb-4 flex flex-wrap items-center gap-3">
+              <span className="rounded-pill border border-accent bg-accent-soft px-3 py-1 text-xs font-semibold text-accent">中文金融工作台</span>
+              <StatusBadge status={runtimeHealth?.status ?? 'ok'} />
+              <span className="rounded-pill border border-subtle bg-surface px-3 py-1 text-xs text-muted">{runtimeHealth?.storage_backend ?? 'sqlite'} / {runtimeHealth?.coordination_backend ?? 'memory'}</span>
             </div>
-            <div className="flex flex-wrap gap-3">
-              <ThemeToggle themeMode={themeMode} onToggle={toggleThemeMode} />
-              <Button onClick={exportAccount} className="bg-slate-950 text-white hover:bg-slate-800">导出账号</Button>
-              <Button onClick={logout} className="bg-slate-100 text-slate-900 ring-1 ring-slate-200 hover:bg-slate-200"><LogOut className="mr-2 inline" size={16}/>退出登录</Button>
+            <h1 className="od-display max-w-5xl text-[clamp(3rem,7.4vw,6.75rem)] font-semibold leading-[0.94]">把市场噪声交给一组会辩论的 Agent。</h1>
+            <p className="mt-7 max-w-2xl text-lg leading-8 text-primary md:text-2xl">发起股票研究、追踪每个 Agent 的实时输出，沉淀记忆并支持人工介入与再分析。</p>
+            <div className="mt-8 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <MetricCard label="历史分析" value={history.length} detail="当前工作区记录" />
+              <MetricCard label="智能体记忆" value={memories.length} detail="可附加到新分析" />
+              <MetricCard label="定时任务" value={schedules.length} detail="自动研究计划" />
+              <MetricCard label="介入会话" value={interventions.length} detail="人工延续分析" />
             </div>
           </div>
-        </header>
+          <LandingAnalysisPreview
+            mode={`${params.ticker || 'SPY'} / live run`}
+            ticker={params.ticker}
+            analysisDate={params.analysis_date}
+            memoryCount={memories.length}
+            onLaunch={launch}
+            disabled={!canCreateWorkspaceResource(selectedWorkspace?.role)}
+          />
+        </div>
+      </section>
+
+      <div className="od-marquee" aria-hidden="true">
+        <span>Analysis · Agent Debate · Memory · Schedule · HITL · Governance · Compliance · Analysis · Agent Debate · Memory · Schedule · HITL · Governance · Compliance · </span>
+      </div>
+
+      <div className="mx-auto max-w-[1500px] space-y-6 px-5 py-8 lg:px-8">
 
         {showProductionSafetyWarning && <Notice tone="amber">生产安全提醒：公网正式使用前请配置 production 环境、精确 CORS、强密钥、HTTPS、备份、审计复核与限流策略。</Notice>}
         {shouldShowClusterRuntimeWarning(runtimeHealth) && <Notice tone="amber">集群运行警告：production-cluster 模式需要同时启用 Postgres 存储与 Redis 协调。</Notice>}
         {error && <Notice tone="red">{error}</Notice>}
 
-        <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <MetricCard label="历史分析" value={history.length} detail="当前工作区记录" />
-          <MetricCard label="智能体记忆" value={memories.length} detail="可附加到新分析" />
-          <MetricCard label="定时任务" value={schedules.length} detail="自动研究计划" />
-          <MetricCard label="介入会话" value={interventions.length} detail="人工延续分析" />
-        </section>
-
-        <section className="rounded-3xl border border-slate-200 bg-white/80 p-3 shadow-xl shadow-slate-200/70 backdrop-blur-xl">
+        <section className="rounded-card border border-strong bg-surface p-3 shadow-panel">
           <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-7">
             {workspacePages.map(page => {
               const active = activePage === page.id;
@@ -2237,26 +2411,28 @@ function App() {
                   key={page.id}
                   type="button"
                   onClick={() => setActivePage(page.id)}
-                  className={`rounded-2xl border p-4 text-left transition ${active ? 'border-cyan-300 bg-cyan-50 shadow-lg shadow-cyan-100/80' : 'border-transparent bg-white/50 hover:border-slate-200 hover:bg-slate-50'}`}
+                  className={`rounded-card border p-4 text-left transition ${active ? 'border-strong bg-canvas shadow-panel' : 'border-transparent bg-surface hover:border-subtle hover:bg-muted'}`}
                   aria-current={active ? 'page' : undefined}
                 >
-                  <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${active ? 'bg-cyan-100 text-cyan-700' : 'bg-slate-100 text-slate-500'}`}>{page.badge}</span>
-                  <p className="mt-2 font-bold text-slate-950">{page.title}</p>
-                  <p className="mt-1 text-xs leading-5 text-slate-500">{page.description}</p>
+                  <span className={`rounded-pill border px-2 py-0.5 text-[11px] font-semibold ${active ? 'border-accent text-accent' : 'border-subtle text-muted'}`}>{page.badge}</span>
+                  <p className="mt-2 font-bold text-primary">{page.title}</p>
+                  <p className="mt-1 text-xs leading-5 text-muted">{page.description}</p>
                 </button>
               );
             })}
           </div>
         </section>
 
-        <section className="rounded-3xl border border-slate-200 bg-white/70 p-5 shadow-xl shadow-slate-200/70 backdrop-blur-xl">
-          <div className="mb-5 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+        <section className="rounded-card border border-strong bg-surface/90 p-5 shadow-float backdrop-blur-xl">
+          <div className="od-section-heading">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-600">{activePageMeta.badge}</p>
-              <h2 className="mt-1 text-2xl font-black text-slate-950">{activePageMeta.title}</h2>
-              <p className="mt-1 text-sm text-slate-500">{activePageMeta.description}</p>
+              <p className="od-section-number">{activePageMeta.badge}</p>
             </div>
-            {selectedWorkspace && <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-500">工作区：{selectedWorkspace.name} · {formatWorkspaceRoleLabel(selectedWorkspace.role)}</span>}
+            <div>
+              <h2 className="od-display text-4xl font-semibold leading-none md:text-6xl">{activePageMeta.title}</h2>
+              <p>{activePageMeta.description}</p>
+              {selectedWorkspace && <span className="mt-4 inline-flex rounded-pill border border-subtle bg-surface px-3 py-1 text-xs text-muted">工作区：{selectedWorkspace.name} · {formatWorkspaceRoleLabel(selectedWorkspace.role)}</span>}
+            </div>
           </div>
 
           {activePage === 'analysis' && (
