@@ -35,6 +35,7 @@ import {
   getSelectedReportSection,
   getThinkingDepth,
   getThinkingDepthLabel,
+  getEventsForTask,
   groupMemoriesByTickerDateAgent,
   flattenMemoryAnalysisGroupMemories,
   isAnalysisInProgress,
@@ -401,6 +402,27 @@ describe('TradingAgents web frontend', () => {
     expect(html).toMatch(/多方研究员[\s\S]*?查看详情/);
     expect(html).toMatch(/空方研究员[\s\S]*?查看详情/);
     expect(html.match(/查看详情/g) ?? []).toHaveLength(4);
+  });
+
+  it('does not render previous task discussion events in a new analysis flow', () => {
+    const events = [
+      { task_id: 1, sequence: 1, agent: 'Bull Researcher', event_type: 'debate.message', message: '旧一轮多方观点', created_at: '2026-05-01T00:00:00Z' },
+      { task_id: 1, sequence: 2, agent: 'Bear Researcher', event_type: 'debate.message', message: '旧一轮空方观点', created_at: '2026-05-01T00:00:01Z' }
+    ];
+
+    const scopedEvents = getEventsForTask({ id: 2 }, events);
+    const html = renderToStaticMarkup(
+      <AgentProgressFlow
+        task={{ id: 2, status: 'queued', parameters: { ...defaultParamsForTest, ticker: 'AAPL' } }}
+        events={events}
+      />
+    );
+
+    expect(scopedEvents).toEqual([]);
+    expect(html).toContain('等待实时事件');
+    expect(html).toContain('事件 0 条');
+    expect(html).not.toContain('旧一轮多方观点');
+    expect(html).not.toContain('旧一轮空方观点');
   });
 
   it('keeps realtime flow as the single event surface instead of a separate agent output panel', () => {

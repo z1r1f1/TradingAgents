@@ -44,7 +44,7 @@ export type StockSearchSuggestion = {
   pinyin?: string;
 };
 
-export type AgentEvent = { sequence: number; agent: string; event_type: string; message: string; created_at: string; payload?: Record<string, unknown> };
+export type AgentEvent = { task_id?: number; sequence: number; agent: string; event_type: string; message: string; created_at: string; payload?: Record<string, unknown> };
 export type AgentMemory = {
   id: number;
   user_id: number;

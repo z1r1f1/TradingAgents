@@ -1208,9 +1208,17 @@ function flowEventTone(event: AgentEvent): string {
   return 'border-subtle bg-surface text-muted';
 }
 
+export function getEventsForTask(task: Pick<AnalysisTask, 'id'>, events: AgentEvent[]): AgentEvent[] {
+  const taskScopedEvents = events.filter(event => event.task_id === task.id);
+  if (taskScopedEvents.length) return taskScopedEvents;
+  if (events.some(event => event.task_id !== undefined && event.task_id !== task.id)) return [];
+  return events;
+}
+
 export function AgentProgressFlow({ task, events }: { task: AnalysisTask; events: AgentEvent[] }) {
-  const steps = buildAgentProgressSteps(events, task.status, task.parameters?.analysts);
-  const rounds = buildAgentFlowRoundGroups(events);
+  const scopedEvents = getEventsForTask(task, events);
+  const steps = buildAgentProgressSteps(scopedEvents, task.status, task.parameters?.analysts);
+  const rounds = buildAgentFlowRoundGroups(scopedEvents);
   const [selectedOutput, setSelectedOutput] = useState<AgentFlowOutputDetail | null>(null);
   const [selectedRoundNumber, setSelectedRoundNumber] = useState<number>(1);
   const [followLatestRound, setFollowLatestRound] = useState(true);
@@ -1264,7 +1272,7 @@ export function AgentProgressFlow({ task, events }: { task: AnalysisTask; events
         <div>
           <p className="text-label text-accent">实时流程图</p>
           <h3 className="font-black text-primary">Agent 分析状态与实时产出</h3>
-          <p className="mt-1 text-xs text-muted">当前：{activeStep?.label ?? (task.status === 'completed' ? '全部完成' : '等待事件')} · 事件 {events.length} 条 · 完成 {completedCount}/{steps.length}</p>
+          <p className="mt-1 text-xs text-muted">当前：{activeStep?.label ?? (task.status === 'completed' ? '全部完成' : '等待事件')} · 事件 {scopedEvents.length} 条 · 完成 {completedCount}/{steps.length}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge status={task.status} />
@@ -1291,7 +1299,7 @@ export function AgentProgressFlow({ task, events }: { task: AnalysisTask; events
                     <div className="mb-1 flex items-center justify-between gap-2">
                       <p className="font-semibold text-muted">{step.outputMessage ? '阶段产出' : '实时输出'}</p>
                       {(() => {
-                        const detailEvent = [...events].reverse().find(event => event.agent === step.agent && isAgentFlowDetailEvent(event));
+                        const detailEvent = [...scopedEvents].reverse().find(event => event.agent === step.agent && isAgentFlowDetailEvent(event));
                         return detailEvent ? (
                         <button
                           type="button"
@@ -1779,6 +1787,7 @@ function App() {
   function clearAnalysisOutputForNewRun() {
     suppressAutoResumeRef.current = true;
     selectedTaskIdRef.current = null;
+    localStorage.removeItem(ACTIVE_ANALYSIS_TASK_KEY);
     setSelected(null);
     setEvents([]);
     setSelectedReportSectionName(null);
