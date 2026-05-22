@@ -868,7 +868,7 @@ export function shouldShowClusterRuntimeWarning(health: RuntimeHealth | null): b
   return health.storage_backend !== 'postgres' || health.coordination_backend !== 'redis' || !health.postgres_configured || !health.redis_configured;
 }
 
-const inputClass = 'w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-200/70';
+const inputClass = 'w-full rounded-card border border-subtle bg-surface/80 px-3 py-2 text-sm text-primary shadow-panel outline-none transition placeholder:text-subtle focus:border-accent focus:ring-2 focus:ring-accent/25';
 
 const roleLabels: Record<WorkspaceRole, string> = {
   owner: '所有者',
@@ -970,27 +970,27 @@ function formatSectionName(sectionName: string): string {
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
-  return <div className="block space-y-1.5 text-sm"><span className="font-medium text-slate-800">{label}</span>{children}{hint && <span className="block text-xs text-slate-400">{hint}</span>}</div>;
+  return <div className="block space-y-1.5 text-sm"><span className="text-label">{label}</span>{children}{hint && <span className="block text-xs text-subtle">{hint}</span>}</div>;
 }
 
 function AnalystMultiSelect({ selected, onChange }: { selected: string[]; onChange: (analysts: string[]) => void }) {
   return (
     <details className="group relative">
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition hover:border-cyan-300 group-open:border-cyan-400 group-open:ring-2 group-open:ring-cyan-200/70">
+      <summary className="surface-interactive flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm text-primary outline-none group-open:border-accent group-open:ring-2 group-open:ring-accent/25">
         <span className="truncate">{formatSelectedAnalysts(selected)}</span>
-        <span className="text-xs text-slate-400 group-open:rotate-180">⌄</span>
+        <span className="text-xs text-subtle group-open:rotate-180">⌄</span>
       </summary>
-      <div className="absolute z-30 mt-2 w-full min-w-72 rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl shadow-slate-200/80">
-        <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
-          <span className="text-xs font-semibold text-slate-500">多选分析师 Agent</span>
-          <button type="button" className="rounded-full bg-cyan-50 px-2.5 py-1 text-xs font-semibold text-cyan-700 hover:bg-cyan-100" onClick={() => onChange([...defaultAnalysts])}>全选</button>
+      <div className="surface-panel absolute z-30 mt-2 w-full min-w-72 p-3">
+        <div className="mb-2 flex items-center justify-between gap-2 border-b border-subtle pb-2">
+          <span className="text-label">多选分析师 Agent</span>
+          <button type="button" className="chip-accent hover:bg-accent/20" onClick={() => onChange([...defaultAnalysts])}>全选</button>
         </div>
         <div className="space-y-2">
           {analystOptions.map(option => {
             const checked = selected.includes(option.value);
             const locked = checked && selected.length === 1;
             return (
-              <label key={option.value} className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition ${checked ? 'border-cyan-200 bg-cyan-50/80' : 'border-slate-100 bg-slate-50/70 hover:border-cyan-100 hover:bg-cyan-50/50'}`}>
+              <label key={option.value} className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition ${checked ? 'border-accent bg-accent-soft/80' : 'border-subtle bg-surface/60 hover:border-accent/35 hover:bg-surface-strong/75'}`}>
                 <input
                   type="checkbox"
                   className="mt-1 accent-cyan-600"
@@ -999,29 +999,29 @@ function AnalystMultiSelect({ selected, onChange }: { selected: string[]; onChan
                   onChange={() => onChange(toggleAnalystSelection(selected, option.value))}
                 />
                 <span>
-                  <span className="block font-semibold text-slate-900">{option.label}</span>
-                  <span className="block text-xs leading-5 text-slate-500">{option.description}</span>
+                  <span className="block font-semibold text-primary">{option.label}</span>
+                  <span className="block text-xs leading-5 text-muted">{option.description}</span>
                 </span>
               </label>
             );
           })}
         </div>
-        <p className="mt-2 text-xs text-slate-400">至少保留 1 个 Agent；默认全选。</p>
+        <p className="mt-2 text-xs text-subtle">至少保留 1 个 Agent；默认全选。</p>
       </div>
     </details>
   );
 }
 
 function MiniStat({ label, value }: { label: string; value: string | number }) {
-  return <div className="rounded-2xl border border-slate-200 bg-white/80 p-4 backdrop-blur"><p className="text-xs text-slate-400">{label}</p><p className="mt-1 font-bold text-slate-950">{value}</p></div>;
+  return <div className="surface-card p-4"><p className="text-label">{label}</p><p className="text-data mt-1 text-base font-bold">{value}</p></div>;
 }
 
 function MetricCard({ label, value, detail }: { label: string; value: number | string; detail: string }) {
-  return <div className="rounded-3xl border border-slate-200 bg-white/85 p-5 shadow-xl shadow-slate-200/70 backdrop-blur"><p className="text-sm text-slate-400">{label}</p><p className="mt-2 text-3xl font-black text-slate-950">{value}</p><p className="mt-1 text-xs text-slate-400">{detail}</p></div>;
+  return <div className="surface-panel p-5"><p className="text-label">{label}</p><p className="text-data mt-2 text-3xl font-black">{value}</p><p className="mt-1 text-xs text-muted">{detail}</p></div>;
 }
 
 function Notice({ tone, children }: { tone: 'amber' | 'red'; children: ReactNode }) {
-  const classes = tone === 'amber' ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-red-200 bg-red-50 text-red-700';
+  const classes = tone === 'amber' ? 'border-caution/35 bg-caution-soft/85 text-caution' : 'border-negative/35 bg-negative-soft/85 text-negative';
   return <div className={`rounded-2xl border p-4 text-sm ${classes}`}>{children}</div>;
 }
 
@@ -1029,16 +1029,16 @@ function StatusBadge({ status }: { status: string | undefined | null }) {
   const normalized = status ?? 'unknown';
   const positive = ['ok', 'active', 'completed', 'open', 'running'].includes(normalized);
   const paused = ['paused', 'pending', 'queued'].includes(normalized);
-  const color = positive ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : paused ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-red-200 bg-red-50 text-red-700';
+  const color = positive ? 'status-positive' : paused ? 'status-caution' : 'status-negative';
   return <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${color}`}>{formatStatusLabel(normalized)}</span>;
 }
 
 function EmptyState({ title, description }: { title: string; description: string }) {
-  return <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/80 p-8 text-center"><p className="font-semibold text-slate-800">{title}</p><p className="mt-2 text-sm text-slate-400">{description}</p></div>;
+  return <div className="surface-card border-dashed p-8 text-center"><p className="font-semibold text-primary">{title}</p><p className="mt-2 text-sm text-subtle">{description}</p></div>;
 }
 
 function InfoBlock({ title, children }: { title: string; children: ReactNode }) {
-  return <div className="rounded-2xl border border-slate-200 bg-slate-50/90 p-4"><h4 className="mb-3 font-semibold text-slate-950">{title}</h4>{children}</div>;
+  return <div className="surface-card p-4"><h4 className="mb-3 font-semibold text-primary">{title}</h4>{children}</div>;
 }
 
 export function ModalCloseButton({ onClick }: { onClick: () => void }) {
@@ -1046,7 +1046,7 @@ export function ModalCloseButton({ onClick }: { onClick: () => void }) {
     <button
       type="button"
       aria-label="关闭弹窗"
-      className="inline-flex items-center justify-center gap-2 rounded-full bg-slate-950 px-4 py-2 text-sm font-bold text-white shadow-lg shadow-slate-300/70 ring-2 ring-white transition hover:bg-cyan-700 focus:outline-none focus:ring-4 focus:ring-cyan-200"
+      className="inline-flex items-center justify-center gap-2 rounded-pill bg-accent px-4 py-2 text-sm font-bold text-accent-foreground shadow-glow transition hover:bg-accent-strong focus:outline-none focus:ring-4 focus:ring-accent/25"
       onClick={onClick}
     >
       <span aria-hidden="true">×</span>
@@ -1056,7 +1056,7 @@ export function ModalCloseButton({ onClick }: { onClick: () => void }) {
 }
 
 function MemoryPicker({ title, memories, selectedIds, onToggle }: { title: string; memories: AgentMemory[]; selectedIds: number[]; onToggle: (memoryId: number) => void }) {
-  return <div className="rounded-2xl border border-slate-200 bg-slate-50/90 p-3 text-sm"><p className="mb-2 font-medium text-slate-800">{title}</p>{memories.length ? memories.map(memory => <label key={memory.id} className="flex items-center gap-2 py-1 text-slate-600"><input type="checkbox" checked={selectedIds.includes(memory.id)} onChange={() => onToggle(memory.id)} /> <span>{buildMemoryOptionLabel(memory)}</span></label>) : <p className="text-xs text-slate-400">暂无可选记忆</p>}</div>;
+  return <div className="surface-card p-3 text-sm"><p className="mb-2 text-label">{title}</p>{memories.length ? memories.map(memory => <label key={memory.id} className="flex items-center gap-2 py-1 text-muted"><input type="checkbox" checked={selectedIds.includes(memory.id)} onChange={() => onToggle(memory.id)} /> <span>{buildMemoryOptionLabel(memory)}</span></label>) : <p className="text-xs text-subtle">暂无可选记忆</p>}</div>;
 }
 
 function InlineMarkdown({ text }: { text: string }) {
@@ -1065,10 +1065,10 @@ function InlineMarkdown({ text }: { text: string }) {
     <>
       {parts.map((part, index) => {
         if (part.startsWith('`') && part.endsWith('`')) {
-          return <code key={index} className="rounded bg-slate-200 px-1 py-0.5 text-[0.9em] text-slate-900">{part.slice(1, -1)}</code>;
+          return <code key={index} className="rounded bg-panel-muted px-1 py-0.5 text-[0.9em] text-primary">{part.slice(1, -1)}</code>;
         }
         if (part.startsWith('**') && part.endsWith('**')) {
-          return <strong key={index} className="font-bold text-slate-950">{part.slice(2, -2)}</strong>;
+          return <strong key={index} className="font-bold text-primary">{part.slice(2, -2)}</strong>;
         }
         return <span key={index}>{part}</span>;
       })}
@@ -1079,11 +1079,11 @@ function InlineMarkdown({ text }: { text: string }) {
 export function MarkdownDocument({ content, className = '' }: { content: string; className?: string }) {
   const blocks = parseMarkdownBlocks(content);
   return (
-    <div className={`space-y-4 text-sm leading-7 text-slate-700 ${className}`}>
+    <div className={`space-y-4 text-sm leading-7 text-muted ${className}`}>
       {blocks.map((block, index) => {
         if (block.type === 'heading') {
           const HeadingTag = `h${Math.min(block.level + 2, 6)}` as 'h3' | 'h4' | 'h5' | 'h6';
-          return <HeadingTag key={index} className="mt-6 font-black text-slate-950 first:mt-0"><InlineMarkdown text={block.text} /></HeadingTag>;
+          return <HeadingTag key={index} className="mt-6 font-black text-primary first:mt-0"><InlineMarkdown text={block.text} /></HeadingTag>;
         }
         if (block.type === 'paragraph') {
           return <p key={index} className="whitespace-pre-wrap"><InlineMarkdown text={block.text} /></p>;
@@ -1093,23 +1093,23 @@ export function MarkdownDocument({ content, className = '' }: { content: string;
           return <ListTag key={index} className={`space-y-1 pl-5 ${block.ordered ? 'list-decimal' : 'list-disc'}`}>{block.items.map((item, itemIndex) => <li key={itemIndex}><InlineMarkdown text={item} /></li>)}</ListTag>;
         }
         if (block.type === 'code') {
-          return <pre key={index} className="overflow-auto rounded-2xl bg-slate-950 p-4 text-xs leading-6 text-slate-100"><code>{block.text}</code></pre>;
+          return <pre key={index} className="overflow-auto rounded-card bg-background p-4 text-xs leading-6 text-primary"><code>{block.text}</code></pre>;
         }
         if (block.type === 'quote') {
-          return <blockquote key={index} className="border-l-4 border-cyan-300 bg-cyan-50 px-4 py-3 text-slate-600"><InlineMarkdown text={block.text} /></blockquote>;
+          return <blockquote key={index} className="border-l-4 border-accent bg-accent-soft/70 px-4 py-3 text-muted"><InlineMarkdown text={block.text} /></blockquote>;
         }
         if (block.type === 'table') {
           const [header, ...rows] = block.rows;
           return (
-            <div key={index} className="overflow-auto rounded-2xl border border-slate-200 bg-white">
-              <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
-                <thead className="bg-slate-50"><tr>{header.map((cell, cellIndex) => <th key={cellIndex} className="px-3 py-2 font-semibold text-slate-950"><InlineMarkdown text={cell} /></th>)}</tr></thead>
-                <tbody className="divide-y divide-slate-100">{rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex} className="px-3 py-2"><InlineMarkdown text={cell} /></td>)}</tr>)}</tbody>
+            <div key={index} className="surface-card overflow-auto">
+              <table className="min-w-full divide-y divide-subtle text-left text-sm">
+                <thead className="bg-surface-strong/80"><tr>{header.map((cell, cellIndex) => <th key={cellIndex} className="px-3 py-2 font-semibold text-primary"><InlineMarkdown text={cell} /></th>)}</tr></thead>
+                <tbody className="divide-y divide-subtle">{rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex} className="px-3 py-2"><InlineMarkdown text={cell} /></td>)}</tr>)}</tbody>
               </table>
             </div>
           );
         }
-        return <hr key={index} className="border-slate-200" />;
+        return <hr key={index} className="border-subtle" />;
       })}
     </div>
   );
@@ -1117,17 +1117,17 @@ export function MarkdownDocument({ content, className = '' }: { content: string;
 
 export function MemoryDetailModal({ memory, onClose }: { memory: AgentMemory; onClose: () => void }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="智能体记忆详情">
-      <div className="max-h-[88vh] w-full max-w-4xl overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl shadow-slate-950/20">
-        <div className="flex flex-col gap-4 border-b border-slate-200 bg-slate-50/80 p-5 md:flex-row md:items-start md:justify-between">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/75 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="智能体记忆详情">
+      <div className="surface-panel-strong max-h-[88vh] w-full max-w-4xl overflow-hidden">
+        <div className="flex flex-col gap-4 border-b border-subtle bg-surface-strong/90 p-5 md:flex-row md:items-start md:justify-between">
           <div>
-            <p className="text-xs font-semibold text-cyan-700">智能体记忆详情</p>
-            <h3 className="mt-1 text-xl font-black text-slate-950">{memory.title}</h3>
-            <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-500">
-              <span className="rounded-full bg-white px-3 py-1">股票：{memory.ticker}</span>
-              <span className="rounded-full bg-white px-3 py-1">日期：{memory.analysis_date}</span>
-              <span className="rounded-full bg-white px-3 py-1">Agent：{formatAgentName(memory.agent_name)}</span>
-              <span className="rounded-full bg-white px-3 py-1">来源分析：#{memory.source_analysis_task_id}</span>
+            <p className="text-label text-accent">智能体记忆详情</p>
+            <h3 className="mt-1 text-xl font-black text-primary">{memory.title}</h3>
+            <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted">
+              <span className="chip-accent">股票：{memory.ticker}</span>
+              <span className="chip-accent">日期：{memory.analysis_date}</span>
+              <span className="chip-accent">Agent：{formatAgentName(memory.agent_name)}</span>
+              <span className="chip-accent">来源分析：#{memory.source_analysis_task_id}</span>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -1149,12 +1149,12 @@ export function MemoryDetailModal({ memory, onClose }: { memory: AgentMemory; on
 }
 
 function flowEventTone(event: AgentEvent): string {
-  if (event.event_type.includes('failed')) return 'border-red-200 bg-red-50 text-red-700';
-  if (event.event_type === 'debate.message') return 'border-orange-200 bg-orange-50 text-orange-800';
-  if (event.event_type === 'tool.call') return 'border-violet-200 bg-violet-50 text-violet-700';
-  if (event.event_type === 'report.section' || event.event_type.includes('completed')) return 'border-emerald-200 bg-emerald-50 text-emerald-700';
-  if (event.event_type.includes('message')) return 'border-cyan-200 bg-cyan-50 text-cyan-700';
-  return 'border-slate-200 bg-slate-50 text-slate-600';
+  if (event.event_type.includes('failed')) return 'border-negative/35 bg-negative-soft text-negative';
+  if (event.event_type === 'debate.message') return 'border-caution/35 bg-caution-soft text-caution';
+  if (event.event_type === 'tool.call') return 'border-accent/35 bg-surface-strong text-accent';
+  if (event.event_type === 'report.section' || event.event_type.includes('completed')) return 'border-positive/35 bg-positive-soft text-positive';
+  if (event.event_type.includes('message')) return 'border-accent/35 bg-accent-soft text-accent';
+  return 'border-subtle bg-surface text-muted';
 }
 
 export function AgentProgressFlow({ task, events }: { task: AnalysisTask; events: AgentEvent[] }) {
@@ -1170,10 +1170,10 @@ export function AgentProgressFlow({ task, events }: { task: AnalysisTask; events
   const activeStep = steps.find(step => step.status === 'active');
   const completedCount = steps.filter(step => step.status === 'done').length;
   const statusClass: Record<AgentProgressStepStatus, string> = {
-    waiting: 'border-slate-200 bg-slate-50 text-slate-400',
-    active: 'border-cyan-300 bg-cyan-50 text-cyan-700 shadow-xl shadow-cyan-100 ring-4 ring-cyan-100 animate-pulse',
-    done: 'border-emerald-200 bg-emerald-50 text-emerald-700 shadow-sm',
-    failed: 'border-red-200 bg-red-50 text-red-700'
+    waiting: 'border-subtle bg-surface text-subtle',
+    active: 'border-accent bg-accent-soft text-accent shadow-glow ring-2 ring-accent/20',
+    done: 'border-positive/35 bg-positive-soft text-positive shadow-panel',
+    failed: 'border-negative/35 bg-negative-soft text-negative'
   };
   const dotLabel: Record<AgentProgressStepStatus, string> = {
     waiting: '待',
@@ -1208,18 +1208,18 @@ export function AgentProgressFlow({ task, events }: { task: AnalysisTask; events
   }, [selectedRoundNumber, selectedRound?.events.length]);
 
   return (
-    <div className="space-y-4 rounded-3xl border border-cyan-100 bg-gradient-to-br from-cyan-50 via-white to-emerald-50 p-4">
+    <div className="surface-panel-strong space-y-4 bg-radial-focus p-4">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-600">实时流程图</p>
-          <h3 className="font-black text-slate-950">Agent 分析状态与实时产出</h3>
-          <p className="mt-1 text-xs text-slate-500">当前：{activeStep?.label ?? (task.status === 'completed' ? '全部完成' : '等待事件')} · 事件 {events.length} 条 · 完成 {completedCount}/{steps.length}</p>
+          <p className="text-label text-accent">实时流程图</p>
+          <h3 className="font-black text-primary">Agent 分析状态与实时产出</h3>
+          <p className="mt-1 text-xs text-muted">当前：{activeStep?.label ?? (task.status === 'completed' ? '全部完成' : '等待事件')} · 事件 {events.length} 条 · 完成 {completedCount}/{steps.length}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge status={task.status} />
-          <span className="rounded-full border border-white bg-white/80 px-3 py-1 text-xs font-semibold text-slate-500">{rounds.length || 1} 轮轨迹</span>
+          <span className="chip-accent">{rounds.length || 1} 轮轨迹</span>
           {!followLatestRound && rounds.length ? (
-            <Button className="bg-slate-100 text-slate-900 hover:bg-slate-200" onClick={() => { setFollowLatestRound(true); setSelectedRoundNumber(latestRoundNumber); }}>跟随最新</Button>
+            <Button className="bg-surface-strong text-primary hover:bg-surface-elevated" onClick={() => { setFollowLatestRound(true); setSelectedRoundNumber(latestRoundNumber); }}>跟随最新</Button>
           ) : null}
         </div>
       </div>
@@ -1229,22 +1229,22 @@ export function AgentProgressFlow({ task, events }: { task: AnalysisTask; events
             <div key={`${step.agent}-${index}`} className="flex items-center gap-2">
               <div className={`w-56 rounded-2xl border p-3 transition-all duration-300 ${statusClass[step.status]}`}>
                 <div className="flex items-center gap-2">
-                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-sm font-black shadow-sm">{dotLabel[step.status]}</span>
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface-elevated text-sm font-black text-primary shadow-panel">{dotLabel[step.status]}</span>
                   <div className="min-w-0">
                     <p className="truncate text-sm font-bold">{step.label}</p>
                     <p className="truncate text-[11px] opacity-75">{progressStatusLabel[step.status]} · {step.eventCount} 条事件</p>
                   </div>
                 </div>
                 {step.lastMessage && (
-                  <div className="mt-3 rounded-xl bg-white/75 p-2 text-xs leading-5 text-slate-600">
+                  <div className="mt-3 rounded-card bg-surface-elevated/80 p-2 text-xs leading-5 text-muted">
                     <div className="mb-1 flex items-center justify-between gap-2">
-                      <p className="font-semibold text-slate-500">{step.outputMessage ? '阶段产出' : '实时输出'}</p>
+                      <p className="font-semibold text-muted">{step.outputMessage ? '阶段产出' : '实时输出'}</p>
                       {(() => {
                         const detailEvent = [...events].reverse().find(event => event.agent === step.agent && isAgentFlowDetailEvent(event));
                         return detailEvent ? (
                         <button
                           type="button"
-                          className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-cyan-700 ring-1 ring-cyan-100 hover:bg-cyan-50"
+                          className="rounded-pill bg-surface px-2 py-0.5 text-[10px] font-semibold text-accent ring-1 ring-accent/20 hover:bg-surface-strong"
                           onClick={() => setSelectedOutput(resolveAgentFlowOutputDetail(task, detailEvent))}
                         >
                           查看详情
@@ -1255,26 +1255,26 @@ export function AgentProgressFlow({ task, events }: { task: AnalysisTask; events
                     <MarkdownDocument content={step.outputMessage ?? step.lastMessage} className="line-clamp-4 text-xs leading-5" />
                   </div>
                 )}
-                {step.sectionName && <span className="mt-2 inline-flex rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-500">{formatSectionName(step.sectionName)}</span>}
+                {step.sectionName && <span className="chip-accent mt-2">{formatSectionName(step.sectionName)}</span>}
               </div>
               {index < steps.length - 1 && (
-                <div className={`h-1 w-8 shrink-0 rounded-full transition-colors duration-300 ${step.status === 'done' ? 'bg-emerald-300' : step.status === 'active' ? 'bg-cyan-300 animate-pulse' : 'bg-slate-200'}`} />
+                <div className={`h-1 w-8 shrink-0 rounded-full transition-colors duration-300 ${step.status === 'done' ? 'bg-positive' : step.status === 'active' ? 'bg-accent animate-pulse' : 'bg-muted'}`} />
               )}
             </div>
           ))}
         </div>
       </div>
-      <div className="rounded-2xl border border-white bg-white/70 p-3">
+      <div className="surface-card p-3">
         <div className="mb-3 flex items-center justify-between gap-2">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-600">讨论与产出轨迹</p>
-            <p className="text-sm font-bold text-slate-950">按轮次展开 Agent 思考、工具调用与报告产出</p>
+            <p className="text-label text-positive">讨论与产出轨迹</p>
+            <p className="text-sm font-bold text-primary">按轮次展开 Agent 思考、工具调用与报告产出</p>
           </div>
         </div>
         {rounds.length && selectedRound ? (
           <div className="grid gap-3 lg:grid-cols-[220px_minmax(0,1fr)]">
-            <aside className="rounded-2xl border border-slate-200 bg-slate-50/80 p-3">
-              <p className="mb-2 text-xs font-semibold text-slate-500">轮次导航</p>
+            <aside className="surface-card p-3">
+              <p className="mb-2 text-label">轮次导航</p>
               <div className="flex gap-2 overflow-x-auto pb-1 lg:max-h-[420px] lg:flex-col lg:overflow-y-auto lg:pb-0">
                 {rounds.map(round => {
                   const active = selectedRound.round === round.round;
@@ -1283,7 +1283,7 @@ export function AgentProgressFlow({ task, events }: { task: AnalysisTask; events
                       key={round.round}
                       type="button"
                       onClick={() => { setFollowLatestRound(false); setSelectedRoundNumber(round.round); }}
-                      className={`shrink-0 rounded-2xl border px-3 py-2 text-left text-xs transition ${active ? 'border-cyan-300 bg-cyan-50 text-cyan-700 shadow-sm' : 'border-slate-200 bg-white text-slate-500 hover:border-cyan-200 hover:bg-cyan-50'}`}
+                      className={`shrink-0 rounded-2xl border px-3 py-2 text-left text-xs transition ${active ? 'border-accent bg-accent-soft text-accent shadow-panel' : 'border-subtle bg-surface text-muted hover:border-accent/35 hover:bg-surface-strong'}`}
                     >
                       <span className="block font-bold">第 {round.round} 轮</span>
                       <span className="mt-1 block truncate">{round.events.length} 条 · {round.summary}</span>
@@ -1292,13 +1292,13 @@ export function AgentProgressFlow({ task, events }: { task: AnalysisTask; events
                 })}
               </div>
             </aside>
-            <section className="rounded-2xl border border-slate-200 bg-slate-50/80 p-3">
+            <section className="surface-card p-3">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <span className="rounded-full bg-slate-950 px-3 py-1 text-xs font-semibold text-white">第 {selectedRound.round} 轮</span>
-                  <p className="mt-2 text-xs text-slate-400">{selectedRound.summary}</p>
+                  <span className="chip-accent">第 {selectedRound.round} 轮</span>
+                  <p className="mt-2 text-xs text-subtle">{selectedRound.summary}</p>
                 </div>
-                <span className="rounded-full bg-white px-3 py-1 text-xs text-slate-500">{selectedRound.events.length} 条事件</span>
+                <span className="chip-accent">{selectedRound.events.length} 条事件</span>
               </div>
               <div ref={roundEventsRef} className="max-h-[420px] space-y-2 overflow-auto pr-1">
                 {selectedRound.events.map(event => {
@@ -1306,15 +1306,15 @@ export function AgentProgressFlow({ task, events }: { task: AnalysisTask; events
                   return (
                     <article key={event.sequence} className={`rounded-2xl border p-3 ${flowEventTone(event)}`}>
                       <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
-                        <span className="rounded-full bg-white/75 px-2 py-0.5 font-bold">#{event.sequence}</span>
+                        <span className="chip-accent font-bold">#{event.sequence}</span>
                         <span className="font-semibold">{formatAgentName(event.agent)}</span>
                         <span className="opacity-70">{formatEventTypeLabel(event.event_type)}</span>
-                        {formatDebateRoundLabel(event) && <span className="rounded-full bg-white/75 px-2 py-0.5">{formatDebateRoundLabel(event)}</span>}
-                        {typeof event.payload?.section === 'string' && <span className="rounded-full bg-white/75 px-2 py-0.5">{formatSectionName(event.payload.section)}</span>}
+                        {formatDebateRoundLabel(event) && <span className="chip-accent">{formatDebateRoundLabel(event)}</span>}
+                        {typeof event.payload?.section === 'string' && <span className="chip-accent">{formatSectionName(event.payload.section)}</span>}
                         {isDetailedOutput && (
                           <button
                             type="button"
-                            className="ml-auto rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-cyan-700 ring-1 ring-cyan-100 hover:bg-cyan-50"
+                            className="ml-auto rounded-pill bg-surface px-2.5 py-1 text-[11px] font-semibold text-accent ring-1 ring-accent/20 hover:bg-surface-strong"
                             onClick={() => setSelectedOutput(resolveAgentFlowOutputDetail(task, event))}
                           >
                             查看详情
@@ -1334,7 +1334,7 @@ export function AgentProgressFlow({ task, events }: { task: AnalysisTask; events
       </div>
       {selectedOutput && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="阶段产出详情">
-          <div className="max-h-[88vh] w-full max-w-4xl overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl shadow-slate-950/20">
+          <div className="surface-panel-strong max-h-[88vh] w-full max-w-4xl overflow-hidden">
             <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-50/80 p-5 md:flex-row md:items-start md:justify-between">
               <div>
                 <p className="text-xs font-semibold text-cyan-700">阶段产出详情</p>

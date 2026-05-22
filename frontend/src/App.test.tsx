@@ -283,13 +283,34 @@ describe('TradingAgents web frontend', () => {
     expect(rounds[0].summary).toContain('投研辩论第 1 轮');
   });
 
-  it('uses a high contrast modal close button that remains visible on light headers', () => {
-    const html = renderToStaticMarkup(<ModalCloseButton onClick={() => undefined} />);
+  it('uses semantic workstation tokens for modal surfaces and close controls', () => {
+    const buttonHtml = renderToStaticMarkup(<ModalCloseButton onClick={() => undefined} />);
+    const modalHtml = renderToStaticMarkup(
+      <MemoryDetailModal
+        memory={{
+          id: 1,
+          user_id: 7,
+          title: '记忆标题',
+          ticker: 'SPY',
+          analysis_date: '2026-05-01',
+          agent_name: 'Market Analyst',
+          source_analysis_task_id: 3,
+          content: '## 细节',
+          tags: {},
+          created_at: '2026-05-01T00:00:00Z',
+          archived: false
+        }}
+        onClose={() => undefined}
+      />
+    );
 
-    expect(html).toContain('关闭');
-    expect(html).toContain('bg-slate-950');
-    expect(html).toContain('text-white');
-    expect(html).toContain('aria-label="关闭弹窗"');
+    expect(buttonHtml).toContain('关闭');
+    expect(buttonHtml).toContain('bg-accent');
+    expect(buttonHtml).toContain('text-accent-foreground');
+    expect(buttonHtml).toContain('shadow-glow');
+    expect(buttonHtml).toContain('aria-label="关闭弹窗"');
+    expect(modalHtml).toContain('surface-panel-strong');
+    expect(modalHtml).toContain('chip-accent');
   });
 
   it('renders realtime flow with clickable markdown outputs and compact round track', () => {
