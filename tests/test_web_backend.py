@@ -340,6 +340,67 @@ def test_cancelled_blocked_analysis_gets_replacement_worker_for_next_queued_task
         service.stop_queue()
 
 
+def test_paused_blocked_analysis_gets_replacement_worker_for_next_queued_task(tmp_path: Path):
+    class BlockingRunner:
+        def __init__(self) -> None:
+            self.started: queue.Queue[str] = queue.Queue()
+            self.release_first = threading.Event()
+
+        def run(self, params: AnalysisCreate, emit):
+            emit(EventPayload(agent="System", event_type="task.started", message=f"start {params.ticker}"))
+            self.started.put(params.ticker)
+            if params.ticker == "AAPL":
+                assert self.release_first.wait(timeout=5), "timed out waiting to release paused task"
+                emit(EventPayload(agent="System", event_type="task.completed", message=f"late done {params.ticker}"))
+                return RunnerResult(
+                    report_sections={"final_trade_decision": f"HOLD {params.ticker}"},
+                    final_decision={"decision": "HOLD", "confidence": None, "rationale": f"HOLD {params.ticker}", "raw_decision": f"HOLD {params.ticker}"},
+                )
+            emit(EventPayload(agent="System", event_type="task.completed", message=f"done {params.ticker}"))
+            return RunnerResult(
+                report_sections={"final_trade_decision": f"HOLD {params.ticker}"},
+                final_decision={"decision": "HOLD", "confidence": None, "rationale": f"HOLD {params.ticker}", "raw_decision": f"HOLD {params.ticker}"},
+            )
+
+    repo = WebRepository(tmp_path / "pause-replacement.sqlite3")
+    user = repo.create_user("pause-replacement@example.com", "correct horse battery staple")
+    runner = BlockingRunner()
+    service = AnalysisService(repo, runner)
+    params_a = AnalysisCreate(
+        ticker="AAPL",
+        analysis_date="2026-05-01",
+        analysts=["market"],
+        research_depth=1,
+        llm_provider="openai",
+        quick_model="gpt-5.4-mini",
+        deep_model="gpt-5.5",
+        output_language="English",
+    )
+    params_b = params_a.model_copy(update={"ticker": "MSFT"})
+
+    try:
+        service.start_queue(max_workers=1)
+        task_a = service.create_analysis(user["id"], params_a, run_inline=False)
+        task_b = service.create_analysis(user["id"], params_b, run_inline=False)
+        service.enqueue_task(task_a["id"], params_a)
+        service.enqueue_task(task_b["id"], params_b)
+
+        assert runner.started.get(timeout=5) == "AAPL"
+        assert repo.get_task_status(task_b["id"]) == "queued"
+
+        assert repo.pause_task_for_user(task_a["id"], user["id"]) is not None
+        assert service.replace_worker_for_blocked_task(task_a["id"]) is True
+
+        assert runner.started.get(timeout=5) == "MSFT"
+        deadline = time.time() + 5
+        while time.time() < deadline and repo.get_task_status(task_b["id"]) != "completed":
+            time.sleep(0.05)
+        assert repo.get_task_status(task_b["id"]) == "completed"
+    finally:
+        runner.release_first.set()
+        service.stop_queue()
+
+
 def test_create_analysis_enqueues_background_work_when_not_inline(tmp_path: Path):
     db_path = tmp_path / "queued-api.sqlite3"
     settings = WebSettings(
@@ -557,6 +618,40 @@ def test_running_analysis_cannot_be_deleted_until_terminal(tmp_path: Path):
     assert response.status_code == 409
     detail = client.get(f"/api/analyses/{task_id}", headers=headers).json()
     assert detail["status"] == "running"
+
+
+def test_pausing_running_analysis_replaces_blocked_queue_worker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    client, _ = make_client(tmp_path)
+    headers = login(client)
+    repo = client.app.state.repository
+    user = repo.get_user_by_email("ada@example.com")
+    task = repo.create_task(
+        user["id"],
+        AnalysisCreate(
+            ticker="AAPL",
+            analysis_date="2026-05-01",
+            analysts=["market"],
+            research_depth=1,
+            llm_provider="openai",
+            quick_model="gpt-5.4-mini",
+            deep_model="gpt-5.5",
+            output_language="English",
+        ),
+    )
+    repo.update_task_status(task["id"], "running")
+    calls: list[int] = []
+
+    def fake_replace(task_id: int) -> bool:
+        calls.append(task_id)
+        return True
+
+    monkeypatch.setattr(client.app.state.service, "replace_worker_for_blocked_task", fake_replace)
+
+    response = client.post(f"/api/analyses/{task['id']}/pause", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "paused"
+    assert calls == [task["id"]]
 
 
 def test_running_analysis_can_be_paused_and_stream_ends(tmp_path: Path):

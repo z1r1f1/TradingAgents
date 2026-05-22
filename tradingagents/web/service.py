@@ -87,14 +87,14 @@ class AnalysisService:
         self._workers.append(worker)
         worker.start()
 
-    def replace_worker_for_cancelled_task(self, task_id: int) -> bool:
-        """Start replacement capacity when a cancelled task is still blocking a worker.
+    def replace_worker_for_blocked_task(self, task_id: int) -> bool:
+        """Start replacement capacity when a stopped task is still blocking a worker.
 
         Python cannot safely kill a thread that is stuck inside an external LLM/data
-        call. Cancellation is therefore cooperative: the running task is marked
-        cancelled in storage and the original worker exits once control returns.
+        call. Cancellation/pause is therefore cooperative: the running task is
+        marked stopped in storage and the original worker exits once control returns.
         This method gives the queue a fresh worker so later queued tasks do not
-        starve behind that cancelled-but-still-blocked call.
+        starve behind that stopped-but-still-blocked call.
         """
         with self._queue_lock:
             if self._queue is None:
@@ -108,6 +108,9 @@ class AnalysisService:
             self._workers = [worker for worker in self._workers if worker.is_alive()]
             self._start_worker_locked(f"tradingagents-analysis-replacement-{task_id}")
             return True
+
+    def replace_worker_for_cancelled_task(self, task_id: int) -> bool:
+        return self.replace_worker_for_blocked_task(task_id)
 
     def enqueue_task(self, task_id: int, params: AnalysisCreate, on_complete: AnalysisCompletionCallback | None = None) -> None:
         task_queue = self._queue

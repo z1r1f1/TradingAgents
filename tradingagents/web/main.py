@@ -685,7 +685,7 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
         task = repository.cancel_task_for_user(task_id, user["id"])
         if not task:
             raise HTTPException(status_code=409, detail="analysis is not running")
-        service.replace_worker_for_cancelled_task(task_id)
+        service.replace_worker_for_blocked_task(task_id)
         audit("analysis.cancel", user_id=user["id"], workspace_id=workspace_id, resource_type="analysis", resource_id=task_id, request=request)
         return annotate_analysis_runtime(task)
 
@@ -700,6 +700,7 @@ def create_app(settings: WebSettings | None = None, *, run_tasks_inline: bool = 
         task = repository.pause_task_for_user(task_id, user["id"])
         if not task:
             raise HTTPException(status_code=409, detail="analysis is not running")
+        service.replace_worker_for_blocked_task(task_id)
         audit("analysis.pause", user_id=user["id"], workspace_id=workspace_id, resource_type="analysis", resource_id=task_id, request=request)
         return annotate_analysis_runtime(task)
 
