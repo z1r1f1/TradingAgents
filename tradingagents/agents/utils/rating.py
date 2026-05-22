@@ -21,10 +21,30 @@ RATINGS_5_TIER: Tuple[str, ...] = (
 )
 
 _RATING_SET = {r.lower() for r in RATINGS_5_TIER}
+_RATING_BY_LOWER = {r.lower(): r for r in RATINGS_5_TIER}
+_CHINESE_RATING_MAP = {
+    "买入": "Buy",
+    "增持": "Overweight",
+    "持有": "Hold",
+    "中性": "Hold",
+    "减持": "Underweight",
+    "卖出": "Sell",
+}
 
-# Matches "Rating: X" / "rating - X" / "Rating: **X**" — tolerates markdown
-# bold wrappers and either a colon or hyphen separator.
-_RATING_LABEL_RE = re.compile(r"rating.*?[:\-][\s*]*(\w+)", re.IGNORECASE)
+# Matches "Rating: X" / "评级：X" / "Rating: **X**" — tolerates markdown
+# bold wrappers and colon/hyphen separators.
+_RATING_LABEL_RE = re.compile(r"(?:rating|评级).*?[:：\-][\s*]*([^\n*]+)", re.IGNORECASE)
+_ENGLISH_RATING_RE = re.compile(r"\b(buy|overweight|hold|underweight|sell)\b", re.IGNORECASE)
+
+
+def _rating_from_fragment(fragment: str) -> str | None:
+    for chinese, rating in _CHINESE_RATING_MAP.items():
+        if chinese in fragment:
+            return rating
+    m = _ENGLISH_RATING_RE.search(fragment)
+    if m:
+        return _RATING_BY_LOWER[m.group(1).lower()]
+    return None
 
 
 def parse_rating(text: str, default: str = "Hold") -> str:
@@ -38,13 +58,14 @@ def parse_rating(text: str, default: str = "Hold") -> str:
     """
     for line in text.splitlines():
         m = _RATING_LABEL_RE.search(line)
-        if m and m.group(1).lower() in _RATING_SET:
-            return m.group(1).capitalize()
+        if m:
+            rating = _rating_from_fragment(m.group(1))
+            if rating:
+                return rating
 
     for line in text.splitlines():
-        for word in line.lower().split():
-            clean = word.strip("*:.,")
-            if clean in _RATING_SET:
-                return clean.capitalize()
+        rating = _rating_from_fragment(line)
+        if rating:
+            return rating
 
     return default

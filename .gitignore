@@ -221,3 +221,19 @@ __marimo__/
 # Local TradingAgents generated data mounted into Docker
 /data/
 .gitnexus
+
+# Web frontend local artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# TradingAgents web runtime database
+*.sqlite
+*.sqlite3
+*.db-journal
+
+# TypeScript build cache
+*.tsbuildinfo
+# Local Docker web deployment secrets
+.env.web.local
+tradingagents-web-admin.txt

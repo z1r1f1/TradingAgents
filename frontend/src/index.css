@@ -1,0 +1,243 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+    --background: 210 40% 98%;
+    --foreground: 222 47% 11%;
+    --canvas: 214 42% 95%;
+    --surface: 0 0% 100%;
+    --surface-strong: 210 40% 98%;
+    --surface-elevated: 0 0% 100%;
+    --panel: 0 0% 100%;
+    --panel-muted: 210 40% 96%;
+    --border: 214 32% 88%;
+    --border-strong: 213 27% 74%;
+    --muted: 210 40% 94%;
+    --muted-foreground: 215 19% 35%;
+    --subtle-foreground: 215 16% 47%;
+    --accent: 190 91% 38%;
+    --accent-soft: 190 88% 93%;
+    --accent-strong: 188 92% 32%;
+    --accent-foreground: 0 0% 100%;
+    --positive: 151 71% 46%;
+    --positive-soft: 151 67% 93%;
+    --positive-foreground: 152 71% 24%;
+    --caution: 38 92% 57%;
+    --caution-soft: 42 96% 93%;
+    --caution-foreground: 32 95% 28%;
+    --negative: 358 84% 64%;
+    --negative-soft: 0 86% 94%;
+    --negative-foreground: 358 74% 38%;
+    --shadow: 215 30% 58%;
+    --grid-line: 211 40% 62%;
+    --theme-glow-a: 190 95% 78%;
+    --theme-glow-b: 222 91% 88%;
+    --theme-glow-c: 262 83% 90%;
+  }
+
+  [data-theme='dark'] {
+    color-scheme: dark;
+    --background: 222 45% 8%;
+    --foreground: 210 40% 96%;
+    --canvas: 226 38% 7%;
+    --surface: 223 31% 12%;
+    --surface-strong: 223 29% 16%;
+    --surface-elevated: 222 27% 20%;
+    --panel: 222 28% 11%;
+    --panel-muted: 223 24% 14%;
+    --border: 217 24% 24%;
+    --border-strong: 214 28% 34%;
+    --muted: 220 24% 18%;
+    --muted-foreground: 216 22% 72%;
+    --subtle-foreground: 217 18% 58%;
+    --accent: 190 95% 62%;
+    --accent-soft: 190 88% 16%;
+    --accent-strong: 173 84% 44%;
+    --accent-foreground: 222 47% 11%;
+    --positive: 151 71% 46%;
+    --positive-soft: 151 67% 14%;
+    --positive-foreground: 152 76% 78%;
+    --caution: 38 92% 57%;
+    --caution-soft: 35 92% 15%;
+    --caution-foreground: 40 94% 76%;
+    --negative: 358 84% 64%;
+    --negative-soft: 357 70% 16%;
+    --negative-foreground: 0 93% 82%;
+    --shadow: 226 50% 3%;
+    --grid-line: 203 43% 73%;
+    --theme-glow-a: 190 95% 42%;
+    --theme-glow-b: 224 54% 24%;
+    --theme-glow-c: 262 61% 28%;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    background-color: hsl(var(--canvas));
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background:
+      radial-gradient(circle at top, hsl(var(--accent) / 0.1), transparent 34%),
+      linear-gradient(180deg, hsl(var(--canvas)), hsl(var(--background)) 24%, hsl(var(--canvas)) 100%);
+    color: hsl(var(--foreground));
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+  }
+
+  * {
+    border-color: hsl(var(--border) / 0.9);
+  }
+
+  ::selection {
+    background: hsl(var(--accent) / 0.28);
+    color: hsl(var(--foreground));
+  }
+}
+
+@layer base {
+  [data-theme='dark'] [class~='bg-white'],
+  [data-theme='dark'] [class~='bg-white/50'],
+  [data-theme='dark'] [class~='bg-white/70'],
+  [data-theme='dark'] [class~='bg-white/80'],
+  [data-theme='dark'] [class~='bg-white/85'],
+  [data-theme='dark'] [class~='bg-white/90'],
+  [data-theme='dark'] [class~='bg-white/95'],
+  [data-theme='dark'] [class~='bg-slate-50'],
+  [data-theme='dark'] [class~='bg-slate-50/70'],
+  [data-theme='dark'] [class~='bg-slate-50/80'],
+  [data-theme='dark'] [class~='bg-slate-50/90'] {
+    background-color: hsl(var(--surface) / 0.9);
+  }
+
+  [data-theme='dark'] [class~='bg-slate-100'],
+  [data-theme='dark'] [class~='bg-slate-200'] {
+    background-color: hsl(var(--surface-strong) / 0.95);
+  }
+
+  [data-theme='dark'] [class~='bg-cyan-50'],
+  [data-theme='dark'] [class~='bg-cyan-100'] {
+    background-color: hsl(var(--accent-soft) / 0.95);
+  }
+
+  [data-theme='dark'] [class~='text-slate-950'],
+  [data-theme='dark'] [class~='text-slate-900'],
+  [data-theme='dark'] [class~='text-slate-800'],
+  [data-theme='dark'] [class~='text-slate-700'] {
+    color: hsl(var(--foreground));
+  }
+
+  [data-theme='dark'] [class~='text-slate-600'],
+  [data-theme='dark'] [class~='text-slate-500'],
+  [data-theme='dark'] [class~='text-slate-400'] {
+    color: hsl(var(--muted-foreground));
+  }
+
+  [data-theme='dark'] [class~='text-slate-300'],
+  [data-theme='dark'] [class~='text-slate-200'],
+  [data-theme='dark'] [class~='text-slate-100'] {
+    color: hsl(var(--foreground));
+  }
+
+  [data-theme='dark'] [class~='border-slate-100'],
+  [data-theme='dark'] [class~='border-slate-200'],
+  [data-theme='dark'] [class~='border-white'] {
+    border-color: hsl(var(--border) / 0.9);
+  }
+
+  [data-theme='dark'] [class~='border-cyan-100'],
+  [data-theme='dark'] [class~='border-cyan-200'],
+  [data-theme='dark'] [class~='border-cyan-300'] {
+    border-color: hsl(var(--accent) / 0.42);
+  }
+
+  [data-theme='dark'] [class~='text-cyan-600'],
+  [data-theme='dark'] [class~='text-cyan-700'] {
+    color: hsl(var(--accent));
+  }
+
+  [data-theme='dark'] [class~='shadow-slate-200/70'],
+  [data-theme='dark'] [class~='shadow-slate-200/80'],
+  [data-theme='dark'] [class~='shadow-slate-200/90'] {
+    --tw-shadow-color: hsl(var(--shadow) / 0.72);
+    --tw-shadow: var(--tw-shadow-colored);
+  }
+}
+
+@layer components {
+  .theme-shell {
+    background:
+      radial-gradient(circle at top left, hsl(var(--theme-glow-a) / 0.36) 0, transparent 28rem),
+      radial-gradient(circle at top right, hsl(var(--theme-glow-c) / 0.22) 0, transparent 30rem),
+      linear-gradient(135deg, hsl(var(--canvas)) 0%, hsl(var(--background)) 46%, hsl(var(--panel-muted)) 100%);
+  }
+
+  .surface-panel {
+    @apply rounded-panel border border-subtle bg-surface shadow-panel backdrop-blur-xl;
+  }
+
+  .surface-panel-strong {
+    @apply rounded-panel border border-strong bg-surface-strong shadow-float backdrop-blur-xl;
+  }
+
+  .surface-card {
+    @apply rounded-card border border-subtle bg-surface-elevated shadow-panel backdrop-blur-lg;
+  }
+
+  .surface-interactive {
+    @apply rounded-card border border-subtle bg-surface transition hover:-translate-y-0.5 hover:border-accent hover:bg-surface-strong hover:shadow-glow;
+  }
+
+  .chip-accent {
+    @apply inline-flex items-center rounded-pill border border-accent bg-accent-soft px-3 py-1 text-xs font-semibold text-accent;
+  }
+
+  .text-label {
+    @apply text-[0.72rem] font-semibold uppercase tracking-panel text-muted;
+  }
+
+  .text-data {
+    @apply text-sm font-semibold tracking-data text-primary;
+  }
+
+  .status-positive {
+    @apply inline-flex items-center rounded-pill border border-positive bg-positive-soft px-3 py-1 text-xs font-semibold text-positive;
+  }
+
+  .status-caution {
+    @apply inline-flex items-center rounded-pill border border-caution bg-caution-soft px-3 py-1 text-xs font-semibold text-caution;
+  }
+
+  .status-negative {
+    @apply inline-flex items-center rounded-pill border border-negative bg-negative-soft px-3 py-1 text-xs font-semibold text-negative;
+  }
+
+  .divider-subtle {
+    @apply border-t border-subtle;
+  }
+}
+
+@layer utilities {
+  .bg-grid {
+    background-image:
+      linear-gradient(hsl(var(--grid-line) / 0.12) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(var(--grid-line) / 0.12) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+
+  .bg-radial-focus {
+    background-image: radial-gradient(circle at top, hsl(var(--accent) / 0.18), transparent 56%);
+  }
+}

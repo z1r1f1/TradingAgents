@@ -121,11 +121,20 @@ pip install .
 
 ### Docker
 
-Alternatively, run with Docker:
+Run the CLI with Docker:
 ```bash
 cp .env.example .env  # add your API keys
 docker compose run --rm tradingagents
 ```
+
+Run the Web UI with Docker Compose:
+```bash
+cp .env.web.example .env.web.local
+# edit .env.web.local: set a strong auth secret, bootstrap email/password, and public CORS origin
+docker compose --env-file .env.web.local -f docker-compose.web.yml up -d --build
+```
+
+The Web UI compose stack serves the React frontend through Nginx on `${TRADINGAGENTS_WEB_HTTP_PORT:-80}` and proxies `/api/` to the FastAPI backend. The backend stores SQLite data in the `tradingagents_web_data` Docker volume, defaults to the safe `demo` runner, and runs analysis submissions through a background queue. The default `TRADINGAGENTS_WEB_ANALYSIS_WORKERS=1` studies one stock at a time while additional submissions remain `queued`.
 
 For local models with Ollama:
 ```bash
@@ -269,3 +278,8 @@ Please reference our work if you find *TradingAgents* provides you with some hel
       url={https://arxiv.org/abs/2412.20138}, 
 }
 ```
+
+
+## Web UI (Phases 1-7)
+
+An authenticated FastAPI + SQLite/Postgres backend and React/Vite frontend are documented in [`docs/web-ui.md`](docs/web-ui.md). The web platform now includes progressive real-runner events, adjustable history reruns, scheduling, selected agent memories, intervention continuations, production hardening, workspace RBAC/governance controls, Phase 7 production-cluster runtime support, and Phase 8 operational migration/usage governance, and Phase 9 enterprise identity/retention foundations. Phase 8 adds auditable SQLite-to-target migration helpers, durable usage-ledger reconciliation, mockable provider-usage import seams, and an operator usage report derived from governance audit and runtime-health APIs. Phase 9 adds optional OIDC/OAuth login, IdP group-to-workspace-role mapping, identity audit views, and workspace-scoped retention preview/apply controls that protect audit logs and usage ledger rows unless explicitly configured. For internet-facing deployments, read the Phase 5-8 hardening sections before exposing the API: enable `TRADINGAGENTS_WEB_ENV=production`, disable open registration after provisioning a user, set exact CORS origins, use HTTPS/reverse proxy termination, configure shared rate limits, run SQLite/Postgres backups, define workspace roles deliberately, and configure real-runner budget caps (`TRADINGAGENTS_WEB_REAL_RUNNER_USER_ANALYSIS_LIMIT`, `TRADINGAGENTS_WEB_REAL_RUNNER_WORKSPACE_ANALYSIS_LIMIT`, `TRADINGAGENTS_WEB_REAL_RUNNER_BUDGET_PERIOD`) before enabling `TRADINGAGENTS_WEB_RUNNER=real`. Multi-instance deployments must set `TRADINGAGENTS_WEB_RUNTIME_MODE=production-cluster`, `TRADINGAGENTS_WEB_POSTGRES_DSN`, and `TRADINGAGENTS_WEB_REDIS_URL`.

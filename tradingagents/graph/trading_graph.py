@@ -78,6 +78,10 @@ class TradingAgentsGraph:
 
         # Initialize LLMs with provider-specific thinking configuration
         llm_kwargs = self._get_provider_kwargs()
+        if self.config.get("llm_timeout"):
+            llm_kwargs["timeout"] = self.config["llm_timeout"]
+        if self.config.get("llm_max_retries") is not None:
+            llm_kwargs["max_retries"] = self.config["llm_max_retries"]
 
         # Add callbacks to kwargs if provided (passed to LLM constructor)
         if self.callbacks:
