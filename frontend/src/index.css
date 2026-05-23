@@ -387,6 +387,23 @@
     @apply md:col-start-2 md:-mt-8;
   }
 
+  .od-workspace-section-heading {
+    @apply mb-10 items-start gap-5;
+  }
+
+  .od-workspace-section-heading > .od-section-copy,
+  .od-workspace-section-heading .od-section-copy {
+    @apply mt-4 md:mt-4;
+  }
+
+  .od-workspace-section-title {
+    @apply font-sans text-3xl font-semibold leading-tight md:text-4xl;
+  }
+
+  .od-workspace-section-copy {
+    @apply max-w-2xl text-base leading-7;
+  }
+
   .od-workflow-band {
     @apply border-y border-strong bg-primary text-surface;
   }

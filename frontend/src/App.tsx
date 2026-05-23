@@ -1124,16 +1124,29 @@ function LandingAnalysisPreview({
   ticker,
   analysisDate,
   memoryCount,
+  title = 'New analysis',
+  briefLabel = 'Analysis brief',
+  statusText = 'Ready to stream',
+  decisionLabel = 'HOLD',
+  steps,
   onLaunch,
-  disabled
+  disabled,
+  actionLabel = '启动分析'
 }: {
   mode: string;
   ticker: string;
   analysisDate: string;
   memoryCount: number;
+  title?: string;
+  briefLabel?: string;
+  statusText?: string;
+  decisionLabel?: string;
+  steps?: string[];
   onLaunch?: () => void;
   disabled?: boolean;
+  actionLabel?: string;
 }) {
+  const previewSteps = steps ?? ['抓取行情、新闻与基本面上下文', '四类分析师生成分工报告', '研究经理整合牛熊论点', '输出最终交易决策与记忆'];
   return (
     <div className="od-collage" aria-label="TradingAgents 分析生成器预览">
       <div className="floating-ticket hidden border border-strong bg-surface p-3 font-mono text-xs leading-5 text-muted shadow-panel lg:block" aria-hidden="true">
@@ -1142,11 +1155,11 @@ function LandingAnalysisPreview({
       </div>
       <div className="od-canvas-card">
         <header className="flex min-h-12 items-center justify-between border-b border-strong px-4 font-mono text-[11px] uppercase tracking-[0.13em]">
-          <span>New analysis</span>
+          <span>{title}</span>
           <span className="text-accent">{mode}</span>
         </header>
         <div className="grid gap-4 p-5">
-          <div className="text-label text-accent">Analysis brief</div>
+          <div className="text-label text-accent">{briefLabel}</div>
           <div className="grid gap-2 sm:grid-cols-2" aria-label="分析参数概览">
             <div className="rounded-card border border-subtle bg-surface-strong p-3">
               <span className="text-label">Ticker</span>
@@ -1174,10 +1187,10 @@ function LandingAnalysisPreview({
             </div>
           </div>
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <span className="inline-flex items-center gap-2 font-mono text-xs text-muted"><i className="h-2.5 w-2.5 rounded-full bg-positive shadow-[0_0_0_4px_hsl(var(--positive)_/_0.16)]" aria-hidden="true" /> Ready to stream</span>
+            <span className="inline-flex items-center gap-2 font-mono text-xs text-muted"><i className="h-2.5 w-2.5 rounded-full bg-positive shadow-[0_0_0_4px_hsl(var(--positive)_/_0.16)]" aria-hidden="true" /> {statusText}</span>
             {onLaunch ? (
               <Button type="button" onClick={onLaunch} disabled={disabled}>
-                <PlayCircle size={16} />启动分析
+                <PlayCircle size={16} />{actionLabel}
               </Button>
             ) : null}
           </div>
@@ -1200,7 +1213,7 @@ function LandingAnalysisPreview({
                   ))}
                 </div>
                 <div className="relative grid min-h-40 content-end gap-2 border border-strong bg-accent-soft p-3">
-                  <span className="absolute right-3 top-3 border border-strong bg-surface px-2 py-1 font-mono text-[10px]">HOLD</span>
+                  <span className="absolute right-3 top-3 border border-strong bg-surface px-2 py-1 font-mono text-[10px]">{decisionLabel}</span>
                   <span className="h-2.5 w-4/5 bg-primary" />
                   <span className="h-2.5 w-3/5 bg-primary" />
                   <span className="h-2.5 w-2/3 bg-accent" />
@@ -1209,7 +1222,7 @@ function LandingAnalysisPreview({
             </div>
           </div>
           <div className="grid">
-            {['抓取行情、新闻与基本面上下文', '四类分析师生成分工报告', '研究经理整合牛熊论点', '输出最终交易决策与记忆'].map((step, index) => (
+            {previewSteps.map((step, index) => (
               <div key={step} className="grid grid-cols-[auto_1fr] items-center gap-3 border-b border-strong px-4 py-3 text-sm text-primary last:border-b-0">
                 <span className="grid h-7 w-7 place-items-center rounded-full border border-strong bg-surface font-mono text-[11px]">{String(index + 1).padStart(2, '0')}</span>
                 <span>{step}</span>
@@ -1620,6 +1633,7 @@ function App() {
   const tickerTouchedRef = useRef(false);
   const stockNameCacheRef = useRef<Record<string, string>>({});
   const suppressAutoResumeRef = useRef(false);
+  const pendingWorkspaceScrollRef = useRef(false);
 
   const authenticated = Boolean(token);
 
@@ -2268,6 +2282,42 @@ function App() {
     window.scrollTo({ top: Math.max(loginSection.offsetTop - 76, 0), behavior: 'smooth' });
   }
 
+  function scrollToWorkspacePage() {
+    const workspacePage = document.getElementById('workspace-active-page');
+    if (!workspacePage) return;
+    const pageTop = workspacePage.getBoundingClientRect().top + window.scrollY;
+    window.scrollTo({ top: Math.max(pageTop - 96, 0), behavior: 'smooth' });
+  }
+
+  function selectWorkspacePage(pageId: WorkspacePageId) {
+    pendingWorkspaceScrollRef.current = true;
+    setActivePage(pageId);
+    if (pageId === activePage) {
+      window.requestAnimationFrame(() => {
+        scrollToWorkspacePage();
+        pendingWorkspaceScrollRef.current = false;
+      });
+    }
+  }
+
+  useEffect(() => {
+    if (!authenticated || !pendingWorkspaceScrollRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      scrollToWorkspacePage();
+      pendingWorkspaceScrollRef.current = false;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activePage, authenticated]);
+
+  const latestAnalysis = history[0] ?? selected;
+  const latestAnalysisTicker = latestAnalysis ? buildAnalysisTickerLabel(latestAnalysis) : '暂无历史分析';
+  const latestAnalysisDate = latestAnalysis?.analysis_date ?? latestAnalysis?.parameters?.analysis_date ?? '暂无';
+  const latestAnalysisStatus = latestAnalysis ? formatStatusLabel(latestAnalysis.status) : '暂无历史结果';
+  const latestAnalysisDecision = latestAnalysis ? formatDecisionLabel(latestAnalysis.final_decision?.decision ?? latestAnalysis.decision) : '暂无结论';
+  const latestAnalysisSteps = latestAnalysis
+    ? ['最近一次历史任务', '已保存的 Agent 输出', '最终交易结论快照', '进入历史页查看完整报告']
+    : ['暂无历史分析', '下方股票分析页可发起任务', '完成后自动沉淀到历史记录', '这里会展示最近一次旧结果'];
+
   if (!authenticated) {
     return (
       <main className="theme-shell min-h-screen text-primary">
@@ -2349,7 +2399,7 @@ function App() {
             <button
               key={page.id}
               type="button"
-              onClick={() => setActivePage(page.id)}
+              onClick={() => selectWorkspacePage(page.id)}
               aria-current={activePage === page.id ? 'page' : undefined}
             >
               {page.title}
@@ -2382,12 +2432,15 @@ function App() {
             </div>
           </div>
           <LandingAnalysisPreview
-            mode={`${params.ticker || 'SPY'} / live run`}
-            ticker={params.ticker}
-            analysisDate={params.analysis_date}
+            title="Latest analysis"
+            briefLabel="Recent result"
+            mode={latestAnalysis ? `${latestAnalysisTicker} / ${latestAnalysisStatus}` : 'history / empty'}
+            ticker={latestAnalysisTicker}
+            analysisDate={latestAnalysisDate}
             memoryCount={memories.length}
-            onLaunch={launch}
-            disabled={!canCreateWorkspaceResource(selectedWorkspace?.role)}
+            statusText={latestAnalysis ? `最近结果：${latestAnalysisStatus}` : '暂无旧分析结果'}
+            decisionLabel={latestAnalysisDecision}
+            steps={latestAnalysisSteps}
           />
         </div>
       </section>
@@ -2410,7 +2463,7 @@ function App() {
                 <button
                   key={page.id}
                   type="button"
-                  onClick={() => setActivePage(page.id)}
+                  onClick={() => selectWorkspacePage(page.id)}
                   className={`rounded-card border p-4 text-left transition ${active ? 'border-strong bg-canvas shadow-panel' : 'border-transparent bg-surface hover:border-subtle hover:bg-muted'}`}
                   aria-current={active ? 'page' : undefined}
                 >
@@ -2423,14 +2476,14 @@ function App() {
           </div>
         </section>
 
-        <section className="rounded-card border border-strong bg-surface/90 p-5 shadow-float backdrop-blur-xl">
-          <div className="od-section-heading">
+        <section id="workspace-active-page" className="rounded-card border border-strong bg-surface/90 p-5 shadow-float backdrop-blur-xl">
+          <div className="od-section-heading od-workspace-section-heading">
             <div>
               <p className="od-section-number">{activePageMeta.badge}</p>
             </div>
             <div>
-              <h2 className="od-display text-4xl font-semibold leading-none md:text-6xl">{activePageMeta.title}</h2>
-              <p className="od-section-copy mt-3">{activePageMeta.description}</p>
+              <h2 className="od-workspace-section-title">{activePageMeta.title}</h2>
+              <p className="od-section-copy od-workspace-section-copy">{activePageMeta.description}</p>
               {selectedWorkspace && <span className="mt-4 inline-flex rounded-pill border border-subtle bg-surface px-3 py-1 text-xs text-muted">工作区：{selectedWorkspace.name} · {formatWorkspaceRoleLabel(selectedWorkspace.role)}</span>}
             </div>
           </div>
