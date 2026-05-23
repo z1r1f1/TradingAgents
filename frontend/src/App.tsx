@@ -52,13 +52,14 @@ export function getWorkspacePageMeta(pageId: WorkspacePageId): WorkspacePageMeta
   return workspacePages.find(page => page.id === pageId);
 }
 
-export type ThinkingDepth = 'default' | 'low' | 'medium' | 'high';
+export type ThinkingDepth = 'default' | 'low' | 'medium' | 'high' | 'xhigh';
 
 export const thinkingDepthOptions: { value: ThinkingDepth; label: string; hint: string }[] = [
   { value: 'default', label: '默认', hint: '使用模型或后端默认推理设置' },
   { value: 'low', label: '低', hint: '更快响应，适合快速验证' },
   { value: 'medium', label: '中', hint: '平衡速度和推理质量' },
-  { value: 'high', label: '高', hint: '更充分推理，适合重要分析' }
+  { value: 'high', label: '高', hint: '更充分推理，适合重要分析' },
+  { value: 'xhigh', label: '极高', hint: '使用渠道支持的 xhigh 推理强度，适合深度研究' }
 ];
 
 export const analystOptions: { value: string; label: string; description: string }[] = [
@@ -74,14 +75,14 @@ export const defaultParams: AnalysisParams = {
   ticker: 'SPY',
   analysis_date: new Date().toISOString().slice(0, 10),
   analysts: [...defaultAnalysts],
-  research_depth: 1,
+  research_depth: 5,
   llm_provider: 'openai',
   quick_model: 'gpt-5.5',
   deep_model: 'gpt-5.5',
   output_language: '中文',
-  google_thinking_level: null,
-  openai_reasoning_effort: null,
-  anthropic_effort: null,
+  google_thinking_level: 'xhigh',
+  openai_reasoning_effort: 'xhigh',
+  anthropic_effort: 'xhigh',
   memory_ids: []
 };
 
@@ -205,7 +206,7 @@ export function applyThinkingDepth(params: AnalysisParams, depth: ThinkingDepth)
 
 export function getThinkingDepth(params: Partial<AnalysisParams> | undefined | null): ThinkingDepth {
   const value = params?.openai_reasoning_effort ?? params?.google_thinking_level ?? params?.anthropic_effort ?? null;
-  return value === 'low' || value === 'medium' || value === 'high' ? value : 'default';
+  return value === 'low' || value === 'medium' || value === 'high' || value === 'xhigh' ? value : 'default';
 }
 
 export function getThinkingDepthLabel(params: Partial<AnalysisParams> | undefined | null): string {

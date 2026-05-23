@@ -43,14 +43,14 @@ class AnalysisCreate(BaseModel):
     ticker_name: str | None = Field(default=None, max_length=120)
     analysis_date: date
     analysts: list[str] = Field(min_length=1)
-    research_depth: int = Field(default=1, ge=1, le=10)
+    research_depth: int = Field(default=5, ge=1, le=10)
     llm_provider: str = Field(default="openai", min_length=1, max_length=64)
     backend_url: str | None = Field(default=None, max_length=512)
     quick_model: str = Field(default="gpt-5.4-mini", min_length=1, max_length=128)
     deep_model: str = Field(default="gpt-5.5", min_length=1, max_length=128)
     output_language: str = Field(default="English", min_length=1, max_length=64)
     google_thinking_level: str | None = None
-    openai_reasoning_effort: str | None = None
+    openai_reasoning_effort: str | None = "xhigh"
     anthropic_effort: str | None = None
     memory_ids: list[int] = Field(default_factory=list)
     memory_context: str | None = Field(default=None, exclude=True)
@@ -140,7 +140,7 @@ class ScheduledAnalysisCreate(BaseModel):
     start_at: datetime
     interval: Literal["daily", "weekly", "monthly"]
     analysts: list[str] = Field(min_length=1)
-    research_depth: int = Field(default=1, ge=1, le=10)
+    research_depth: int = Field(default=5, ge=1, le=10)
     llm_provider: str = Field(default="openai", min_length=1, max_length=64)
     backend_url: str | None = Field(default=None, max_length=512)
     quick_model: str = Field(default="gpt-5.4-mini", min_length=1, max_length=128)
@@ -149,7 +149,7 @@ class ScheduledAnalysisCreate(BaseModel):
     analysis_date: date | None = None
     analysis_date_policy: Literal["run_date", "fixed"] = "run_date"
     google_thinking_level: str | None = None
-    openai_reasoning_effort: str | None = None
+    openai_reasoning_effort: str | None = "xhigh"
     anthropic_effort: str | None = None
     memory_ids: list[int] = Field(default_factory=list)
 

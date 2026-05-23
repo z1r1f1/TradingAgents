@@ -23,7 +23,8 @@ DEFAULT_CONFIG = {
     "backend_url": os.getenv("TRADINGAGENTS_BACKEND_URL") or os.getenv("OPENAI_BASE_URL"),
     # Provider-specific thinking configuration
     "google_thinking_level": None,      # "high", "minimal", etc.
-    "openai_reasoning_effort": None,    # "medium", "high", "low"
+    # "low", "medium", "high", "xhigh" for compatible OpenAI-style gateways.
+    "openai_reasoning_effort": os.getenv("TRADINGAGENTS_REASONING_EFFORT", "xhigh"),
     "anthropic_effort": None,           # "high", "medium", "low"
     # Checkpoint/resume: when True, LangGraph saves state after each node
     # so a crashed run can resume from the last successful step.

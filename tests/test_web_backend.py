@@ -53,6 +53,19 @@ def login(client: TestClient) -> dict[str, str]:
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
+def test_analysis_create_defaults_to_deep_xhigh_research():
+    params = AnalysisCreate(
+        ticker="SPY",
+        analysis_date=date(2026, 5, 1),
+        analysts=["market"],
+    )
+
+    assert params.research_depth == 5
+    assert params.openai_reasoning_effort == "xhigh"
+    assert params.parameter_payload()["research_depth"] == 5
+    assert params.parameter_payload()["openai_reasoning_effort"] == "xhigh"
+
+
 def test_protected_routes_require_authentication(tmp_path: Path):
     client, _ = make_client(tmp_path)
 

@@ -38,7 +38,7 @@ from tradingagents.utils.telegram import (
 )
 
 DEFAULT_FIXED_RESEARCH_DEPTH = 5
-DEFAULT_FIXED_REASONING_EFFORT = "high"
+DEFAULT_FIXED_REASONING_EFFORT = "xhigh"
 DEFAULT_UI_REFRESH_PER_SECOND = 0.5
 DEFAULT_UI_UPDATE_INTERVAL_SECONDS = 2.0
 
@@ -1443,7 +1443,7 @@ def analyze(
         DEFAULT_FIXED_REASONING_EFFORT,
         "--reasoning-effort",
         envvar="TRADINGAGENTS_REASONING_EFFORT",
-        help="OpenAI reasoning effort, e.g. low/medium/high. Defaults to TRADINGAGENTS_REASONING_EFFORT or high.",
+        help="OpenAI reasoning effort, e.g. low/medium/high/xhigh. Defaults to TRADINGAGENTS_REASONING_EFFORT or xhigh.",
     ),
     save_report_flag: bool = typer.Option(
         False,

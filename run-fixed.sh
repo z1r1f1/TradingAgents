@@ -3,7 +3,7 @@ set -euo pipefail
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
   echo "Usage: $0 <TICKER> [YYYY-MM-DD]" >&2
-  echo "Environment overrides: TRADINGAGENTS_ANALYSTS=market,news TRADINGAGENTS_QUICK_MODEL=... TRADINGAGENTS_DEEP_MODEL=... TRADINGAGENTS_DEPTH=5 TRADINGAGENTS_REASONING_EFFORT=high" >&2
+  echo "Environment overrides: TRADINGAGENTS_ANALYSTS=market,news TRADINGAGENTS_QUICK_MODEL=... TRADINGAGENTS_DEEP_MODEL=... TRADINGAGENTS_DEPTH=5 TRADINGAGENTS_REASONING_EFFORT=xhigh" >&2
   echo "Example: $0 600330.SS" >&2
   echo "Example: $0 600330.SS 2026-05-04" >&2
   exit 2

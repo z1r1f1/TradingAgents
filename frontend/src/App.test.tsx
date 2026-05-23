@@ -169,15 +169,15 @@ describe('TradingAgents web frontend', () => {
         deep_model: 'gpt-5.5',
         output_language: '中文'
       },
-      'high'
+      'xhigh'
     );
 
-    expect(params.openai_reasoning_effort).toBe('high');
-    expect(params.google_thinking_level).toBe('high');
-    expect(params.anthropic_effort).toBe('high');
-    expect(getThinkingDepth(params)).toBe('high');
-    expect(getThinkingDepthLabel(params)).toContain('高');
-    expect(buildAnalysisParameterSummary({ id: 9, status: 'queued', parameters: params })).toContain('思考：高');
+    expect(params.openai_reasoning_effort).toBe('xhigh');
+    expect(params.google_thinking_level).toBe('xhigh');
+    expect(params.anthropic_effort).toBe('xhigh');
+    expect(getThinkingDepth(params)).toBe('xhigh');
+    expect(getThinkingDepthLabel(params)).toContain('极高');
+    expect(buildAnalysisParameterSummary({ id: 9, status: 'queued', parameters: params })).toContain('思考：极高');
   });
 
   it('filters history by ticker and analysis date while showing saved parameters', () => {
@@ -576,6 +576,8 @@ describe('TradingAgents web frontend', () => {
 
   it('defaults analyst selection to all agents and supports multi-select dropdown toggles', () => {
     expect(defaultParams.analysts).toEqual(analystOptions.map(option => option.value));
+    expect(defaultParams.research_depth).toBe(5);
+    expect(getThinkingDepth(defaultParams)).toBe('xhigh');
     expect(formatSelectedAnalysts(defaultParams.analysts)).toContain('全选');
     expect(toggleAnalystSelection(defaultParams.analysts, 'news')).toEqual(['market', 'social', 'fundamentals']);
     expect(toggleAnalystSelection(['market'], 'market')).toEqual(['market']);
