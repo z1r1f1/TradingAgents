@@ -1113,7 +1113,7 @@ function MemoryPicker({ title, memories, selectedIds, onToggle }: { title: strin
 function OpenDesignBrand() {
   return (
     <span className="od-brand">
-      <span className="od-brand-mark" aria-hidden="true" />
+      <img className="od-brand-icon" src="/logo.png" alt="" aria-hidden="true" />
       <span>TradingAgents</span>
     </span>
   );

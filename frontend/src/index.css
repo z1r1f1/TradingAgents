@@ -252,26 +252,8 @@
     @apply inline-grid w-max grid-cols-[34px_auto] items-center gap-3 font-mono text-sm font-bold uppercase tracking-[0.03em] text-primary;
   }
 
-  .od-brand-mark {
-    @apply relative grid h-[34px] w-[34px] place-items-center border border-strong bg-surface;
-  }
-
-  .od-brand-mark::before,
-  .od-brand-mark::after {
-    content: "";
-    position: absolute;
-    border: 1px solid hsl(var(--accent));
-    transform: rotate(8deg);
-  }
-
-  .od-brand-mark::before {
-    inset: 7px;
-  }
-
-  .od-brand-mark::after {
-    inset: 11px;
-    border-color: hsl(var(--theme-glow-b));
-    transform: rotate(-13deg);
+  .od-brand-icon {
+    @apply h-[34px] w-[34px] rounded-[0.7rem] border border-strong bg-surface object-cover shadow-glow;
   }
 
   .od-nav {
