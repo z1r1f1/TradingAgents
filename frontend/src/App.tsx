@@ -110,7 +110,7 @@ export function ThemeToggle({ themeMode, onToggle }: { themeMode: ThemeMode; onT
       aria-pressed={dark}
       aria-label={dark ? '切换到亮色主题' : '切换到深色主题'}
       onClick={onToggle}
-      className="inline-flex items-center gap-2 rounded-full border border-subtle bg-surface/95 px-3 py-2 text-xs font-semibold text-primary shadow-panel transition hover:-translate-y-0.5 hover:border-accent hover:shadow-glow"
+      className="inline-flex items-center gap-2 whitespace-nowrap rounded-full border border-subtle bg-surface/95 px-3 py-2 text-xs font-semibold text-primary shadow-panel transition hover:-translate-y-0.5 hover:border-accent hover:shadow-glow"
     >
       {dark ? <Moon size={15} className="text-accent" /> : <Sun size={15} className="text-accent" />}
       <span>当前：{dark ? '深色主题' : '亮色主题'}</span>
@@ -2342,7 +2342,7 @@ function App() {
 
   return (
     <main className="theme-shell min-h-screen text-primary">
-      <header className="od-topbar">
+      <header className="od-topbar od-workspace-topbar">
         <OpenDesignBrand />
         <nav className="od-nav" aria-label="工作区导航">
           {workspacePages.map(page => (
@@ -2356,7 +2356,7 @@ function App() {
             </button>
           ))}
         </nav>
-        <div className="flex justify-self-end gap-2">
+        <div className="od-top-actions">
           <ThemeToggle themeMode={themeMode} onToggle={toggleThemeMode} />
           <Button onClick={exportAccount}>导出账号</Button>
           <Button onClick={logout} className="bg-surface text-primary hover:bg-muted"><LogOut className="mr-2 inline" size={16}/>退出</Button>
@@ -2430,7 +2430,7 @@ function App() {
             </div>
             <div>
               <h2 className="od-display text-4xl font-semibold leading-none md:text-6xl">{activePageMeta.title}</h2>
-              <p>{activePageMeta.description}</p>
+              <p className="od-section-copy mt-3">{activePageMeta.description}</p>
               {selectedWorkspace && <span className="mt-4 inline-flex rounded-pill border border-subtle bg-surface px-3 py-1 text-xs text-muted">工作区：{selectedWorkspace.name} · {formatWorkspaceRoleLabel(selectedWorkspace.role)}</span>}
             </div>
           </div>
